@@ -1,0 +1,16 @@
+# Dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Server data: database, backups and generated secrets — never commit
+data/
+
+# Local configuration (copy .env.example to .env)
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+Thumbs.db

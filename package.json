@@ -1,0 +1,55 @@
+{
+  "name": "badya-spaces",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Badya University campus facilities booking — courts, pitches and Activity Center",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite",
+    "dev:server": "tsx watch --disable-warning=ExperimentalWarning server/index.ts",
+    "build": "tsc -b && vite build",
+    "start": "tsx --disable-warning=ExperimentalWarning server/index.ts --production",
+    "typecheck": "tsc -b --noEmit",
+    "test": "vitest run",
+    "data:demo": "tsx --disable-warning=ExperimentalWarning server/manage.ts demo",
+    "data:reset": "tsx --disable-warning=ExperimentalWarning server/manage.ts reset",
+    "data:backup": "tsx --disable-warning=ExperimentalWarning server/manage.ts backup",
+    "data:password": "tsx --disable-warning=ExperimentalWarning server/manage.ts password",
+    "i18n:check": "node scripts/i18n-check.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/plus-jakarta-sans": "^5.1.1",
+    "@fontsource/ibm-plex-sans-arabic": "^5.1.0",
+    "@fontsource/instrument-serif": "^5.1.0",
+    "@hono/node-server": "^2.1.1",
+    "@tanstack/react-query": "^5.62.0",
+    "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
+    "hono": "^4.13.9",
+    "lucide-react": "^0.468.0",
+    "motion": "^11.15.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router": "^7.1.0",
+    "tsx": "^4.23.15",
+    "zod": "^4.6.5",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/node": "^26.6.2",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.0.0",
+    "typescript": "~5.7.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

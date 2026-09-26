@@ -1,0 +1,329 @@
+@import "tailwindcss";
+@import "@fontsource-variable/plus-jakarta-sans";
+@import "@fontsource/instrument-serif/400.css";
+@import "@fontsource/instrument-serif/400-italic.css";
+@import "@fontsource/ibm-plex-sans-arabic/400.css";
+@import "@fontsource/ibm-plex-sans-arabic/600.css";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+ * Badya Spaces design tokens.
+ * Brand colours come from the Badya University logo (bronze #885B3A and
+ * sand #CCBFAC). The dusk blues come from the campus render. These are
+ * prototype tokens — swap them for the official brand guidelines.
+ */
+:root {
+  --bg: #f6f2ec;
+  --bg-elevated: #fbf8f4;
+  --surface: #ffffff;
+  --surface-2: #f3eee7;
+  --surface-3: #e9e2d8;
+  --line: #e7dfd4;
+  --line-strong: #d5cabb;
+  --ink: #1c1915;
+  --ink-2: #4a443c;
+  --muted: #736b60;
+  --faint: #a1998d;
+
+  --brand: #885b3a;
+  --brand-hover: #744c30;
+  --brand-strong: #5e3d26;
+  --brand-soft: #f3e7dc;
+  --brand-softer: #f9f3ed;
+  --on-brand: #ffffff;
+  --sand: #ccbfac;
+
+  --dusk: #14233a;
+  --dusk-2: #1f3453;
+  --on-dusk: #f3ede5;
+
+  --success: #1f7a4d;
+  --success-soft: #e3f1e8;
+  --warning: #a86200;
+  --warning-soft: #fbefd9;
+  --danger: #b43a2e;
+  --danger-soft: #f8e4e1;
+  --info: #2d63a6;
+  --info-soft: #e3ecf7;
+  --violet: #6a4fa0;
+  --violet-soft: #eee9f7;
+
+  --shadow-sm: 0 1px 2px rgb(28 25 21 / 0.05);
+  --shadow-md: 0 1px 2px rgb(28 25 21 / 0.04), 0 10px 28px -14px rgb(60 40 20 / 0.22);
+  --shadow-lg: 0 2px 6px rgb(28 25 21 / 0.05), 0 24px 60px -24px rgb(60 40 20 / 0.35);
+  --ring: rgb(136 91 58 / 0.35);
+  --glass: rgb(251 248 244 / 0.78);
+  --glow: rgb(205 150 105 / 0.22);
+  --hatch: rgb(28 25 21 / 0.06);
+
+  /* Data-viz roles — validated (CVD, contrast, lightness band) against the surface. */
+  --viz-1: #a8561f;
+  --viz-2: #2a78d6;
+  --viz-1-soft: #e0b594;
+  --viz-seq-0: #f7efe8;
+  --viz-seq-1: #efd9c6;
+  --viz-seq-2: #e3bc9c;
+  --viz-seq-3: #d19b70;
+  --viz-seq-4: #bb7947;
+  --viz-seq-5: #9c5a2b;
+  --viz-seq-6: #7a4119;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0a111b;
+  --bg-elevated: #0e1723;
+  --surface: #121c2a;
+  --surface-2: #182536;
+  --surface-3: #203046;
+  --line: #223148;
+  --line-strong: #31445d;
+  --ink: #f2ede6;
+  --ink-2: #cbc3b7;
+  --muted: #96a1b0;
+  --faint: #6c7889;
+
+  --brand: #cf9a73;
+  --brand-hover: #dcaa85;
+  --brand-strong: #ecc3a3;
+  --brand-soft: rgb(207 154 115 / 0.14);
+  --brand-softer: rgb(207 154 115 / 0.08);
+  --on-brand: #1b120b;
+  --sand: #8f8472;
+
+  --dusk: #0e1a2b;
+  --dusk-2: #172a44;
+  --on-dusk: #f3ede5;
+
+  --success: #55c28c;
+  --success-soft: rgb(85 194 140 / 0.14);
+  --warning: #e5a948;
+  --warning-soft: rgb(229 169 72 / 0.14);
+  --danger: #ef7a6e;
+  --danger-soft: rgb(239 122 110 / 0.14);
+  --info: #74a8ea;
+  --info-soft: rgb(116 168 234 / 0.14);
+  --violet: #ac93e6;
+  --violet-soft: rgb(172 147 230 / 0.15);
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-md: 0 1px 2px rgb(0 0 0 / 0.25), 0 12px 30px -14px rgb(0 0 0 / 0.55);
+  --shadow-lg: 0 2px 6px rgb(0 0 0 / 0.3), 0 28px 60px -24px rgb(0 0 0 / 0.7);
+  --ring: rgb(207 154 115 / 0.45);
+  --glass: rgb(14 23 35 / 0.78);
+  --glow: rgb(207 140 90 / 0.14);
+  --hatch: rgb(255 255 255 / 0.06);
+
+  --viz-1: #c46a2c;
+  --viz-2: #3987e5;
+  --viz-1-soft: #6b4228;
+  --viz-seq-0: #1b2533;
+  --viz-seq-1: #33302f;
+  --viz-seq-2: #553b2a;
+  --viz-seq-3: #7c5033;
+  --viz-seq-4: #a3683f;
+  --viz-seq-5: #cc8752;
+  --viz-seq-6: #efb384;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-strong: var(--brand-strong);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-softer: var(--brand-softer);
+  --color-on-brand: var(--on-brand);
+  --color-sand: var(--sand);
+  --color-dusk: var(--dusk);
+  --color-dusk-2: var(--dusk-2);
+  --color-on-dusk: var(--on-dusk);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-violet: var(--violet);
+  --color-violet-soft: var(--violet-soft);
+
+  --font-sans: "Plus Jakarta Sans Variable", "IBM Plex Sans Arabic", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-display: "Instrument Serif", "IBM Plex Sans Arabic", Georgia, serif;
+  --font-arabic: "IBM Plex Sans Arabic", "Plus Jakarta Sans Variable", sans-serif;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --radius-2xl: 28px;
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv11";
+    min-height: 100dvh;
+  }
+  :lang(ar),
+  [lang="ar"] {
+    font-family: var(--font-arabic);
+  }
+  ::selection {
+    background: var(--brand-soft);
+    color: var(--ink);
+  }
+  :focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  button,
+  [role="button"] {
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+}
+
+/* ── Arabic & right-to-left ── */
+/* Letter-spacing breaks joined Arabic letters apart. */
+:lang(ar) *,
+:lang(ar) *::before {
+  letter-spacing: 0 !important;
+}
+/* Directional icons point the other way when the page reads right-to-left. */
+[dir="rtl"] :is(.lucide-arrow-right, .lucide-arrow-left, .lucide-chevron-right, .lucide-chevron-left, .lucide-chevrons-right, .lucide-chevrons-left, .lucide-arrow-up-right, .lucide-arrow-down-right, .lucide-log-out) {
+  transform: scaleX(-1);
+}
+
+@layer components {
+  .font-display {
+    font-family: var(--font-display);
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+  /* The display serif has no Arabic letters — use the Arabic face, a little bolder. */
+  :lang(ar) .font-display {
+    font-family: var(--font-arabic);
+    font-weight: 600;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Diagonal hatch — fully booked / maintenance slots. */
+  .hatch {
+    background-image: repeating-linear-gradient(135deg, var(--hatch) 0 2px, transparent 2px 8px);
+  }
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .glass {
+    background: var(--glass);
+    backdrop-filter: saturate(1.4) blur(18px);
+    -webkit-backdrop-filter: saturate(1.4) blur(18px);
+  }
+  /* Student backdrop: warm light from the top, like the campus at sunset. */
+  .app-backdrop {
+    background:
+      radial-gradient(1200px 520px at 85% -120px, var(--glow), transparent 70%),
+      radial-gradient(900px 420px at -10% -80px, rgb(120 150 190 / 0.1), transparent 70%),
+      var(--bg);
+  }
+  .skeleton {
+    background: linear-gradient(90deg, var(--surface-2) 0%, var(--surface-3) 50%, var(--surface-2) 100%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .mask-fade-x {
+    mask-image: linear-gradient(90deg, transparent, #000 16px, #000 calc(100% - 16px), transparent);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes scanline {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(var(--scan-distance, 220px));
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 currentColor;
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 0 5px transparent;
+    opacity: 0.85;
+  }
+}
+
+.live-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
