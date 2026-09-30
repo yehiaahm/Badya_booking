@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { addDays, startOfDay } from "date-fns";
 import { createSeed } from "../../../server/api/seed/generate";
 import type { DbState } from "../../../server/api/state";
-import { daySessions, EngineIndex, evaluateBooking, computeStanding, slotStatus, sessionTimes } from "./index";
+import { daySessions, EngineIndex, evaluateBooking, evaluateJoin, computeStanding, slotStatus, sessionTimes } from "./index";
 import type { Booking } from "../types";
 
 // Anchor: Thursday 24 September 2026, 14:20 local time.
@@ -35,7 +35,7 @@ const SQUAD_D2 = ["u_youssef", "u_seif", "u_ziad", "u_adham", "u_marwan"];
 describe("seed", () => {
   it("generates a realistic, rule-abiding dataset", () => {
     expect(db.users.filter((u) => u.role === "student").length).toBeGreaterThan(400);
-    expect(db.bookings.length).toBeGreaterThan(500); // 7 facilities, ~3 weeks of history and upcoming sessions
+    expect(db.bookings.length).toBeGreaterThan(250); // 7 facilities open 09:00–15:00, ~3 weeks of history and upcoming sessions
     const ids = new Set(db.bookings.map((b) => b.id));
     expect(ids.size).toBe(db.bookings.length);
   });
@@ -61,13 +61,14 @@ describe("booking engine", () => {
   it("computes sessions with turnover built in", () => {
     const f = { ...db.facilities.find((x) => x.id === "f_football")!, turnoverMinutes: 15 };
     const times = sessionTimes(f, new Date(ANCHOR)).map((s) => s.start.toTimeString().slice(0, 5));
-    expect(times).toContain("08:00");
-    expect(times).toContain("09:15"); // 60 min + 15 min turnover
-    expect(times).not.toContain("09:00");
+    expect(times).toContain("09:00");
+    expect(times).toContain("09:45"); // 30 min + 15 min turnover
+    expect(times).not.toContain("09:30");
+    expect(times.at(-1)).toBe("14:15"); // 14:15–14:45 is the last session that ends by closing
   });
 
   it("blocks the same student from booking back-to-back sessions", () => {
-    const ev = evaluateBooking(ix, { facilityId: "f_football", start: at(1, 19), userId: "u_yehia", participantIds: SQUAD_D2 });
+    const ev = evaluateBooking(ix, { facilityId: "f_football", start: at(1, 12, 30), userId: "u_yehia", participantIds: SQUAD_D2 });
     expect(ev.ok).toBe(false);
     expect(ev.blocking.map((b) => b.code)).toContain("consecutive");
     const msg = ev.blocking.find((b) => b.code === "consecutive")!.message;
@@ -75,15 +76,28 @@ describe("booking engine", () => {
   });
 
   it("blocks a linked group from extending through a friend's account", () => {
-    const ev = evaluateBooking(ix, { facilityId: "f_football", start: at(2, 20), userId: "u_yehia", participantIds: SQUAD_D2 });
+    const ev = evaluateBooking(ix, { facilityId: "f_football", start: at(2, 13, 30), userId: "u_yehia", participantIds: SQUAD_D2 });
     expect(ev.blocking.map((b) => b.code)).toEqual(["linked_group"]);
     expect(ev.linkedGroup?.otherId).toBe("u_omar");
   });
 
-  it("applies limits to listed participants", () => {
-    // Omar already plays on day +2, so he can't be added to another Team Sports booking that day.
+  it("checks an invited player's own limits when they accept — and never tells the booker why", () => {
+    // Omar already plays on day +2, so he can't join another Team Sports booking that day.
     const ev = evaluateBooking(ix, { facilityId: "f_football", start: at(2, 9), userId: "u_yehia", participantIds: [...SQUAD_D2, "u_omar"] });
-    expect(ev.blocking.some((b) => b.personId === "u_omar")).toBe(true);
+    expect(ev.blocking.some((b) => b.personId === "u_omar")).toBe(false);
+    const invite: Booking = { id: "BK-TEST", facilityId: "f_football", userId: "u_yehia", unitIndex: 0, start: at(2, 9), end: at(2, 9, 30), status: "AWAITING_PLAYERS", participants: [{ userId: "u_omar", status: "invited" }], source: "student", createdAt: ANCHOR, updatedAt: ANCHOR, version: 1 };
+    const join = evaluateJoin(index({ ...db, bookings: [...db.bookings, invite] }), invite, "u_omar");
+    expect(join.ok).toBe(false);
+    expect(join.blocking.map((b) => b.code)).toContain("daily_limit");
+    expect(join.blocking.find((b) => b.code === "daily_limit")!.message).toMatch(/^You’ve reached/);
+  });
+
+  it("doesn't count an invitation until it's accepted", () => {
+    const invite: Booking = { id: "BK-TEST", facilityId: "f_football", userId: "u_yehia", unitIndex: 0, start: at(2, 9), end: at(2, 9, 30), status: "AWAITING_PLAYERS", participants: [{ userId: "u_seif", status: "invited" }], source: "student", createdAt: ANCHOR, updatedAt: ANCHOR, version: 1 };
+    const ix2 = index({ ...db, bookings: [...db.bookings, invite] });
+    expect(ix2.involvements("u_seif").some((b) => b.id === "BK-TEST")).toBe(false);
+    const accepted = { ...invite, participants: [{ userId: "u_seif", status: "accepted" as const }] };
+    expect(index({ ...db, bookings: [...db.bookings, accepted] }).involvements("u_seif").some((b) => b.id === "BK-TEST")).toBe(true);
   });
 
   const freeSlot = () => {

@@ -6,7 +6,7 @@ import type { SlotView } from "@/api";
 import { cn } from "@/lib/cn";
 import { useIsDesktop } from "@/lib/hooks";
 import { useAvailability, useFacility, useMyWaitlist } from "@/lib/queries";
-import { clock, dayKey, fmtDayLong, fmtDayShort, fmtRange, fmtTime, format, relDay } from "@/lib/time";
+import { clock, dayKey, fmtDayLong, fmtDayShort, fmtRange, fmtTime, format, fromDayKey, relDay } from "@/lib/time";
 import { fmtMinutes } from "@/domain/policy";
 import { AMENITIES, POLICY_ICONS } from "@/components/icons";
 import { BRAND_ASSETS } from "@/components/brand/Brand";
@@ -29,7 +29,8 @@ function Fact({ icon: Icon, label, value }: { icon: typeof Users; label: string;
       </span>
       <span className="min-w-0">
         <span className="block text-[11px] font-semibold uppercase tracking-wide text-muted">{label}</span>
-        <span className="block truncate text-sm font-bold text-ink">{value}</span>
+        {/* Wraps rather than truncating — hours and capacity are the point of these chips. */}
+        <span className="block text-sm font-bold leading-snug text-ink">{value}</span>
       </span>
     </div>
   );
@@ -42,7 +43,9 @@ export function FacilityPage() {
   const desktop = useIsDesktop();
   const detail = useFacility(id);
   const today = dayKey(clock.now());
-  const day = params.get("day") ?? today;
+  // A hand-edited or truncated link falls back to today instead of breaking the page.
+  const asked = params.get("day");
+  const day = asked && /^\d{4}-\d{2}-\d{2}$/.test(asked) && dayKey(fromDayKey(asked)) === asked ? asked : today;
   const avail = useAvailability(id, day);
   const waitlist = useMyWaitlist();
   const [selected, setSelected] = useState<string | null>(params.get("slot"));
@@ -92,7 +95,18 @@ export function FacilityPage() {
     return avail.data.slots.find((s) => (s.status === "available" || s.status === "limited") && s.session.start > info.session.start) ?? avail.data.slots.find((s) => s.status === "available" || s.status === "limited");
   }, [info, avail.data]);
 
-  if (detail.isError) return <ErrorState error={detail.error} onRetry={() => detail.refetch()} />;
+  if (detail.isError)
+    return (
+      <ErrorState
+        error={detail.error}
+        onRetry={() => detail.refetch()}
+        action={
+          <Button variant="secondary" size="sm" onClick={() => nav("/explore")}>
+            {t("Explore facilities")}
+          </Button>
+        }
+      />
+    );
   if (!detail.data) return <FacilitySkeleton />;
 
   const d = detail.data;
@@ -206,7 +220,7 @@ export function FacilityPage() {
           <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Fact icon={Users} label={t("Capacity")} value={capacityLabel(f)} />
             <Fact icon={Timer} label={t("Session")} value={fmtMinutes(f.sessionMinutes)} />
-            <Fact icon={Clock3} label={t("Today")} value={hoursToday ? `${hoursToday.open}–${hoursToday.close}` : "Closed"} />
+            <Fact icon={Clock3} label={t("Today")} value={hoursToday ? `${hoursToday.open}–${hoursToday.close}` : t("Closed")} />
             <Fact icon={Hourglass} label={t("Turnover")} value={f.turnoverMinutes ? fmtMinutes(f.turnoverMinutes) : t("None")} />
           </div>
 
@@ -226,7 +240,7 @@ export function FacilityPage() {
                 <p className="font-bold text-ink">{t("Planned maintenance")}</p>
                 {d.upcomingMaintenance.slice(0, 2).map((m) => (
                   <p key={m.id} className="mt-0.5 text-ink-2">
-                    {fmtDayShort(m.start)}, {fmtRange(m.start, m.end)} — {m.reason}
+                    {fmtDayShort(m.start)}{L(", ", "، ")}{fmtRange(m.start, m.end)} — {m.reason}
                   </p>
                 ))}
               </div>
@@ -270,7 +284,7 @@ export function FacilityPage() {
               <Scale className="size-5 text-brand" />{" "}{t("Booking rules")}
             </h2>
             <p className="mt-1 text-sm text-muted">{t("These keep")}{" "}{f.name}{" "}{t("fair for everyone. They’re applied automatically — you’ll always see why a session isn’t available.")}</p>
-            <ul className="mt-4 grid gap-2 sm:grid-cols-2">
+            <ul className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
               {[...fairLines, ...otherLines].map((l) => {
                 const I = POLICY_ICONS[l.icon] ?? Info;
                 return (
@@ -283,7 +297,7 @@ export function FacilityPage() {
             </ul>
           </section>
 
-          <section className="mt-10 grid gap-8 md:grid-cols-2">
+          <section className="mt-10 grid grid-cols-1 gap-8 md:grid-cols-2">
             <div>
               <h2 className="text-xl font-bold tracking-tight text-ink">{t("About")}</h2>
               <p className="mt-2 text-[15px] leading-relaxed text-ink-2">{f.description}</p>
@@ -297,19 +311,21 @@ export function FacilityPage() {
                 ))}
               </ul>
             </div>
-            <div>
-              <h2 className="text-xl font-bold tracking-tight text-ink">{t("Amenities")}</h2>
-              <ul className="mt-3 grid grid-cols-2 gap-2">
-                {f.amenities.map((a) => {
-                  const m = AMENITIES[a];
-                  return (
-                    <li key={a} className="flex items-center gap-2.5 rounded-xl bg-surface-2/70 px-3 py-2.5 text-[13px] font-medium text-ink-2">
-                      <m.icon className="size-4 shrink-0 text-muted" /> {m.label}
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
+            {f.amenities.length > 0 && (
+              <div>
+                <h2 className="text-xl font-bold tracking-tight text-ink">{t("Amenities")}</h2>
+                <ul className="mt-3 grid grid-cols-2 gap-2">
+                  {f.amenities.map((a) => {
+                    const m = AMENITIES[a];
+                    return (
+                      <li key={a} className="flex items-center gap-2.5 rounded-xl bg-surface-2/70 px-3 py-2.5 text-[13px] font-medium text-ink-2">
+                        <m.icon className="size-4 shrink-0 text-muted" /> {m.label}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
           </section>
 
           {popular.length > 0 && (

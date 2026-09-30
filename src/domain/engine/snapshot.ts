@@ -1,6 +1,7 @@
 import { resolvePolicy } from "../policy";
 import type {
   Booking,
+  BookingParticipant,
   BookingPolicy,
   BookingStatus,
   Facility,
@@ -24,14 +25,22 @@ export interface EngineSnapshot {
   maintenance: MaintenancePeriod[];
   restrictions: Restriction[];
   users: User[];
+  /** The official student list by university ID. Null when no list has been uploaded. */
+  roster?: ReadonlyMap<string, { status?: "active" | "inactive" }> | null;
 }
 
 /** Bookings that occupy a space. */
-export const CAPACITY_STATUSES: ReadonlySet<BookingStatus> = new Set(["PENDING", "CONFIRMED", "CHECKED_IN", "COMPLETED", "NO_SHOW"]);
+export const CAPACITY_STATUSES: ReadonlySet<BookingStatus> = new Set(["AWAITING_PLAYERS", "PENDING", "CONFIRMED", "CHECKED_IN", "COMPLETED", "NO_SHOW"]);
 /** Bookings that count towards a person's usage (limits, back-to-back, rest). */
-export const USAGE_STATUSES: ReadonlySet<BookingStatus> = new Set(["PENDING", "CONFIRMED", "CHECKED_IN", "COMPLETED", "NO_SHOW"]);
+export const USAGE_STATUSES: ReadonlySet<BookingStatus> = new Set(["AWAITING_PLAYERS", "PENDING", "CONFIRMED", "CHECKED_IN", "COMPLETED", "NO_SHOW"]);
 /** Bookings a student is still "holding". */
-export const UPCOMING_STATUSES: ReadonlySet<BookingStatus> = new Set(["PENDING", "CONFIRMED"]);
+export const UPCOMING_STATUSES: ReadonlySet<BookingStatus> = new Set(["AWAITING_PLAYERS", "PENDING", "CONFIRMED"]);
+
+/** A listed player who has agreed to play. Invitations don't count until accepted; older records have no status. */
+export const hasJoined = (p: BookingParticipant) => !p.status || p.status === "accepted";
+
+/** Everyone actually on a booking: the booker and the players who accepted. */
+export const playersOf = (b: Booking): ID[] => [b.userId, ...b.participants.filter((p) => hasJoined(p) && p.userId !== b.userId).map((p) => p.userId)];
 
 export const sessionKey = (facilityId: ID, startISO: string) => `${facilityId}|${startISO}`;
 
@@ -102,7 +111,7 @@ export class EngineIndex {
     return this._byFacility.get(id) ?? [];
   }
 
-  /** Bookings a person is involved in — as the booker or as a listed participant. */
+  /** Bookings a person is on — as the booker or as a player who accepted. Open invitations don't count. */
   involvements(userId: ID): Booking[] {
     if (!this._byPerson) {
       const m = new Map<ID, Booking[]>();
@@ -111,13 +120,18 @@ export class EngineIndex {
         if (arr) arr.push(b);
         else m.set(uid, [b]);
       };
-      for (const b of this.s.bookings) {
-        add(b.userId, b);
-        for (const p of b.participants) if (p.userId !== b.userId) add(p.userId, b);
-      }
+      for (const b of this.s.bookings) for (const uid of playersOf(b)) add(uid, b);
       this._byPerson = m;
     }
     return this._byPerson.get(userId) ?? [];
+  }
+
+  /** Whether a student may use the system under the official list (always true when no list is loaded). */
+  onRoster(u: User | undefined): boolean {
+    if (!this.s.roster) return true;
+    // Inactive on the list (graduated, withdrawn…) counts as not on it.
+    const entry = u?.universityId ? this.s.roster.get(u.universityId) : undefined;
+    return !!entry && entry.status !== "inactive";
   }
 
   waitlistFor(facilityId: ID, startISO: string): WaitlistEntry[] {

@@ -140,6 +140,7 @@ export const POLICY_SCHEMA: PolicyGroup[] = [
     icon: "calendar-range",
     fields: [
       { path: "window.advanceDays", label: tx("Book up to"), help: tx("How far ahead sessions can be booked. Shorter windows reduce hoarding of popular slots."), type: "number", min: 0, max: 60, unit: "days ahead", levels: ALL },
+      { path: "window.releaseHour", label: tx("New days open at"), help: tx("Each day at this hour, the next day in the window opens for booking — the same moment for everyone, instead of midnight."), type: "number", min: 0, max: 23, unit: ":00", levels: ALL },
       { path: "window.minLeadMinutes", label: tx("Booking closes"), help: tx("Minutes before a session starts when booking closes."), type: "number", min: 0, max: 240, step: 5, unit: "min before", levels: ALL },
       { path: "approval.required", label: tx("Requires staff approval"), help: tx("Bookings stay pending until a staff member approves them."), type: "boolean", levels: ALL },
     ],
@@ -150,9 +151,10 @@ export const POLICY_SCHEMA: PolicyGroup[] = [
     description: tx("Who is on the booking — used for group fairness and check-in."),
     icon: "users",
     fields: [
-      { path: "participants.required", label: tx("List participants"), help: tx("Students must list the university IDs of everyone playing."), type: "boolean", levels: ALL },
+      { path: "participants.required", label: tx("List participants"), help: tx("Students must invite everyone playing. Each player accepts from their own phone before the booking is confirmed."), type: "boolean", levels: ALL },
       { path: "participants.min", label: tx("Minimum people"), help: tx("Including the booker."), type: "number", min: 1, max: 30, unit: "people", levels: ALL, dependsOn: "participants.required" },
-      { path: "participants.max", label: tx("Maximum people"), help: tx("Including the booker. Cannot exceed the facility capacity."), type: "number", min: 1, max: 60, unit: "people", levels: ALL, dependsOn: "participants.required" },
+      { path: "participants.max", label: tx("Maximum people"), help: tx("Including the booker. Cannot exceed the facility capacity."), type: "number", min: 1, max: 60, unit: "people", levels: ALL },
+      { path: "participants.acceptMinutes", label: tx("Time to accept"), help: tx("How long invited players have to accept. If too few accept in time, the booking is cancelled and the session reopens."), type: "number", min: 5, max: 1440, step: 5, unit: "min", levels: ALL },
     ],
   },
   {
@@ -213,9 +215,13 @@ export interface PolicyLine {
 export function describePolicy(p: BookingPolicy, opts: { facilityName: string; categoryName: string; sessionMinutes: number; mode: "exclusive" | "shared" }): PolicyLine[] {
   const scope = p.fairness.scope === "category" ? L(`${opts.categoryName.toLowerCase()} facilities`, `مرافق ${opts.categoryName}`) : opts.facilityName;
   const lines: PolicyLine[] = [];
+  const release = `${String(p.window.releaseHour ?? 0).padStart(2, "0")}:00`;
   lines.push({
     icon: "calendar",
-    text: p.window.advanceDays === 0 ? L("Sessions can be booked on the day only.", "الحجز متاح في نفس اليوم فقط.") : L(`Book up to ${p.window.advanceDays} ${p.window.advanceDays === 1 ? "day" : "days"} ahead.`, `احجز قبل الموعد بـ${N.day(p.window.advanceDays)} كحد أقصى.`),
+    text:
+      p.window.advanceDays === 0
+        ? L(`Sessions can be booked on the day only, from ${release}.`, `الحجز متاح في نفس اليوم فقط، من الساعة ${release}.`)
+        : L(`Book up to ${p.window.advanceDays} ${p.window.advanceDays === 1 ? "day" : "days"} ahead — each new day opens at ${release}.`, `احجز قبل الموعد بـ${N.day(p.window.advanceDays)} كحد أقصى — كل يوم جديد يُفتح حجزه الساعة ${release}.`),
   });
   lines.push({ icon: "hash", text: L(`${p.limits.perDay} ${p.limits.perDay === 1 ? "booking" : "bookings"} per day and ${p.limits.perWeek} per week across ${scope}.`, `${N.booking(p.limits.perDay)} في اليوم و${N.booking(p.limits.perWeek)} في الأسبوع في ${scope}.`) });
   if (p.fairness.maxConsecutive <= 1) {
@@ -224,7 +230,7 @@ export function describePolicy(p: BookingPolicy, opts: { facilityName: string; c
     lines.push({ icon: "repeat", text: L(`Up to ${p.fairness.maxConsecutive} sessions in a row (${fmtMinutes(p.fairness.maxConsecutive * opts.sessionMinutes)} max).`, `حتى ${N.session(p.fairness.maxConsecutive)} متتالية (${fmtMinutes(p.fairness.maxConsecutive * opts.sessionMinutes)} كحد أقصى).`), tone: "fair" });
   }
   if (p.fairness.restMinutes > 0) lines.push({ icon: "coffee", text: L(`Leave at least ${fmtMinutes(p.fairness.restMinutes)} between your sessions.`, `اترك ${fmtMinutes(p.fairness.restMinutes)} على الأقل بين مواعيدك.`), tone: "fair" });
-  if (p.participants.required && opts.mode === "exclusive") lines.push({ icon: "users", text: L(`List ${p.participants.min}–${p.participants.max} players by university ID. Everyone listed follows the same limits.`, `سجّل من ${p.participants.min} إلى ${p.participants.max} لاعبين بالرقم الجامعي. كل المسجلين يخضعون لنفس الحدود.`), tone: "fair" });
+  if (p.participants.required && opts.mode === "exclusive") lines.push({ icon: "users", text: L(`Invite ${p.participants.min}–${p.participants.max} players, you included. Each player accepts from their own phone, and the booking is confirmed once enough have accepted. Everyone on it follows the same limits.`, `ادعُ من ${p.participants.min} إلى ${p.participants.max} لاعبين بما فيهم أنت. كل لاعب يوافق من موبايله، ويتأكد الحجز عندما يوافق العدد الكافي. كل من في الحجز يخضع لنفس الحدود.`), tone: "fair" });
   if (p.fairness.linkedGroups.enabled) lines.push({ icon: "link", text: L("Groups who regularly play together can’t hold consecutive sessions, even from different accounts.", "المجموعات التي تلعب معًا باستمرار لا يمكنها حجز مواعيد متتالية، حتى من حسابات مختلفة."), tone: "fair" });
   lines.push({
     icon: "undo",

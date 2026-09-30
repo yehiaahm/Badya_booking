@@ -64,6 +64,10 @@ export interface UserPreferences {
 
 export type Language = "en" | "ar";
 
+export type UserStatus = "active" | "suspended" | "deactivated";
+/** Student details an administrator may correct. */
+export type CorrectableField = "faculty" | "year";
+
 export interface User {
   id: ID;
   role: RoleKey;
@@ -72,7 +76,16 @@ export interface User {
   email: string;
   /** Hue used for the generated avatar. */
   avatarHue: number;
-  status: "active" | "suspended";
+  /**
+   * suspended — students keep using the app read-only (no new bookings, waitlists or invitations);
+   * staff and administrators are signed out. deactivated — the account is closed but kept for history;
+   * its email and university ID are free for a new account.
+   */
+  status: UserStatus;
+  /** Why and when an administrator last suspended or deactivated the account. */
+  statusNote?: { reason: string; at: ISO; byUserId: ID };
+  /** Student details an administrator corrected by hand. The official list doesn't overwrite them. */
+  overrides?: Partial<Record<CorrectableField, { at: ISO; byUserId: ID }>>;
   createdAt: ISO;
   lastActiveAt?: ISO;
   // Students
@@ -126,6 +139,8 @@ export interface FacilityCategory {
   policy: PolicyOverride;
   sortOrder: number;
   active: boolean;
+  /** Retired: hidden everywhere except the admin archive. Only possible once none of its facilities are live. */
+  archived?: { at: ISO; byUserId: ID };
   /** Arabic content. Missing fields fall back to English. */
   ar?: { description?: string };
 }
@@ -198,6 +213,11 @@ export interface Facility {
   access: { audiences: Audience[]; faculties: string[] | null; minYear: number | null };
   status: "active" | "inactive";
   inactiveReason?: string;
+  /**
+   * Retired: can't be booked, hidden from students and staff, kept for history and the admin archive.
+   * `previousStatus` is what restoring it brings back.
+   */
+  archived?: { at: ISO; byUserId: ID; reason?: string; previousStatus: "active" | "inactive" };
   createdAt: ISO;
   updatedAt: ISO;
   /** Arabic content. Missing fields fall back to English. */
@@ -236,6 +256,8 @@ export interface BookingPolicy {
     advanceDays: number;
     /** Booking closes this many minutes before a session starts. */
     minLeadMinutes: number;
+    /** Hour of the day (0–23) when the next day opens for booking — the same moment for everyone. */
+    releaseHour: number;
   };
   limits: {
     perDay: number;
@@ -265,6 +287,8 @@ export interface BookingPolicy {
     /** People including the booker. */
     min: number;
     max: number;
+    /** Invited players have this long to accept before a booking that's short of players is cancelled. */
+    acceptMinutes: number;
   };
   cancellation: {
     /** Free cancellation until this many minutes before start. */
@@ -300,6 +324,8 @@ export type PolicyOverride = DeepPartial<BookingPolicy>;
 /* ───────────────────────────── Bookings ───────────────────────────── */
 
 export type BookingStatus =
+  /** Holding the session while invited players accept; cancelled if too few accept in time. */
+  | "AWAITING_PLAYERS"
   | "PENDING"
   | "CONFIRMED"
   | "CHECKED_IN"
@@ -309,8 +335,14 @@ export type BookingStatus =
   | "EXPIRED"
   | "WAITLISTED";
 
+/** invited → accepted or declined; an accepted player may later leave. Older records have no status and count as accepted. */
+export type ParticipantStatus = "invited" | "accepted" | "declined" | "left";
+
 export interface BookingParticipant {
   userId: ID;
+  status?: ParticipantStatus;
+  invitedAt?: ISO;
+  respondedAt?: ISO;
   checkedIn?: boolean;
 }
 
@@ -330,7 +362,9 @@ export interface Booking {
   updatedAt: ISO;
   /** Optimistic-concurrency version, bumped on every write. */
   version: number;
-  cancellation?: { at: ISO; byUserId: ID; reason: string; late: boolean; penalty: boolean; byRole: RoleKey };
+  /** AWAITING_PLAYERS: cancelled at this time unless enough invited players have accepted. */
+  playersDeadline?: ISO;
+  cancellation?: { at: ISO; byUserId: ID; reason: string; late: boolean; penalty: boolean; byRole: RoleKey | "system" };
   checkIn?: { at: ISO; byUserId: ID; method: "qr" | "manual"; headcount?: number };
   noShow?: { at: ISO; byUserId: ID | "system"; auto: boolean; waived?: { at: ISO; byUserId: ID; reason: string } };
   approval?: { at: ISO; byUserId: ID; decision: "approved" | "rejected"; note?: string };
@@ -417,6 +451,8 @@ export type NotificationType =
   | "booking_reminder"
   | "booking_cancelled"
   | "participant_added"
+  | "invitation"
+  | "invitation_response"
   | "waitlist_joined"
   | "slot_available"
   | "waitlist_expired"
@@ -507,6 +543,8 @@ export interface AuthSession {
   createdAt: ISO;
   lastSeenAt: ISO;
   revokedAt?: ISO;
+  /** Ended by the idle timeout — later requests with it can still say so. */
+  idle?: boolean;
 }
 
 /** A user's password, kept apart from the user record so it never travels with it. Keyed by user id. */
@@ -536,6 +574,38 @@ export interface SystemSettings {
   allowedEmailDomains: string[];
   /** Devices a student account may be bound to. Beyond this, an admin must approve. */
   maxDevicesPerStudent: number;
+}
+
+/** A phone or browser that asked to receive notifications for a user (Web Push). */
+export interface PushSubscriptionRecord {
+  /** SHA-256 of the push endpoint. */
+  id: ID;
+  userId: ID;
+  deviceId: ID;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  createdAt: ISO;
+  lastSentAt?: ISO;
+  failures?: number;
+}
+
+/** One student from the official list supplied by the university. Keyed by university ID. */
+export interface RosterEntry {
+  id: string;
+  name?: string;
+  nameAr?: string;
+  email?: string;
+  faculty?: string;
+  year?: number;
+  level?: "undergraduate" | "postgraduate";
+  /** Graduated, withdrawn or otherwise not enrolled: can't register or book. Missing means active. */
+  status?: "active" | "inactive";
+  /**
+   * Keyed hash of the last 4 digits of the student's national ID. When present, registering
+   * with this university ID needs those digits — knowing someone's ID isn't enough.
+   */
+  idCheck?: string;
 }
 
 /** Pre-aggregated daily stats — the "analytics warehouse" for history. */

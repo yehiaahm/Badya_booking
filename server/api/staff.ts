@@ -2,19 +2,22 @@ import { addDays, addMinutes, isSameDay, startOfDay } from "date-fns";
 import { clock, fmtDayShort, fmtRange, fmtTime } from "@/lib/time";
 import { L, N } from "@/i18n/lang";
 import { facilityName, localFacility } from "@/domain/localize";
-import { sessionTimes, capacityBookings } from "@/domain/engine";
-import type { Booking, FacilityIssue, IssueCategory, MaintenancePeriod, User } from "@/domain/types";
+import { sessionTimes, capacityBookings, playersOf, UPCOMING_STATUSES } from "@/domain/engine";
+import type { Booking, Facility, FacilityIssue, IssueCategory, MaintenancePeriod, User, WaitlistEntry } from "@/domain/types";
 import { ApiError, type ScanCandidate, type ScanResult, type StaffFacilityToday, type StaffOverview, type StaffSession, type StaffSessionBooking } from "@/api/types";
-import { applyLadder, audit, bookingOrThrow, engine, facilityOrThrow, notify, policyFor, requirePermission, tick, toPublic, toView, updateBooking } from "./core";
+import { applyLadder, audit, bookingOrThrow, engine, facilityOrThrow, liftAutoRestrictionIfCleared, notify, policyFor, requirePermission, tick, toPublic, toView, updateBooking } from "./core";
 import { db } from "./db";
 import { dayStat } from "./metrics";
 import { signToken, tamper, verifyToken, windowOf } from "./qr";
+import { westernDigits } from "@/lib/roster";
 
 const label = (b: { start: string; end: string }) => `${fmtDayShort(b.start)}${L(", ", "، ")}${fmtRange(b.start, b.end)}`;
 
 function assignedIds(u: User): string[] {
-  if (u.role === "admin" || u.role === "super_admin") return db.state.facilities.map((f) => f.id);
-  return u.assignedFacilityIds ?? [];
+  // Archived facilities have no day to run.
+  const live = new Set(db.state.facilities.filter((f) => !f.archived).map((f) => f.id));
+  if (u.role === "admin" || u.role === "super_admin") return [...live];
+  return (u.assignedFacilityIds ?? []).filter((id) => live.has(id));
 }
 
 /** Facility staff can only work on the facilities they're assigned to; administrators on all. */
@@ -36,6 +39,46 @@ function staffBooking(b: Booking, viewerId: string): StaffSessionBooking {
     canMarkNoShow: b.status === "CONFIRMED" && now >= graceEnd,
     late: b.status === "CONFIRMED" && now > start,
   };
+}
+
+/**
+ * What a ticket must pass once its booking is known: this facility, today,
+ * not cancelled or used, confirmed, and inside the check-in window. Returns
+ * the refusal to show, or null when the student can be checked in.
+ */
+function review(u: User, booking: Booking, facilityId: string, checks: ScanResult["checks"]): ScanResult | null {
+  const now = clock.now();
+  const add = (l: string, pass: boolean) => {
+    checks.push({ label: l, status: pass ? "pass" : "fail" });
+    return pass;
+  };
+  const view = toView(booking, u.id);
+  const base = { booking: view, student: toPublic(db.state.users.find((x) => x.id === booking.userId)) };
+  const fail = (title: string, message: string, extra: Partial<ScanResult> = {}): ScanResult => ({ ok: false, title, message, checks, ...base, ...extra });
+  const here = db.state.facilities.find((f) => f.id === facilityId);
+  if (!add(L(`Booked for ${here?.name ?? "this facility"}`, `محجوز في ${here ? facilityName(here) : "هذا المرفق"}`), booking.facilityId === facilityId)) {
+    const lf = localFacility(view.facility);
+    return fail(L("Wrong facility", "مرفق مختلف"), L(`This ticket is for ${lf.name} (${lf.location.building}${lf.location.floor ? `, ${lf.location.floor}` : ""}). Please direct the student there.`, `هذه التذكرة لـ${lf.name} (${lf.location.building}${lf.location.floor ? `، ${lf.location.floor}` : ""}). من فضلك وجّه الطالب إلى هناك.`));
+  }
+  if (!add(L("Booked for today", "محجوز لليوم"), isSameDay(new Date(booking.start), now))) return fail(L("Wrong day", "يوم مختلف"), L(`This booking is for ${label(booking)}. It can only be used on that day.`, `هذا الحجز لموعد ${label(booking)}. لا يمكن استخدامه إلا في ذلك اليوم.`));
+  if (!add(L("Not cancelled", "غير ملغى"), booking.status !== "CANCELLED" && booking.status !== "EXPIRED"))
+    return fail(L("Booking cancelled", "الحجز ملغى"), L(`This booking was cancelled${booking.cancellation ? ` on ${fmtDayShort(booking.cancellation.at)} at ${fmtTime(booking.cancellation.at)}` : ""} and can’t be used.`, `تم إلغاء هذا الحجز${booking.cancellation ? ` يوم ${fmtDayShort(booking.cancellation.at)} الساعة ${fmtTime(booking.cancellation.at)}` : ""} ولا يمكن استخدامه.`));
+  if (booking.status === "CHECKED_IN" || booking.status === "COMPLETED") {
+    add(L("Not already used", "لم يُستخدم من قبل"), false);
+    return fail(L("Already checked in", "تم تسجيل الحضور بالفعل"), L(`This ticket was used at ${fmtTime(booking.checkIn!.at)}. Each ticket can be scanned once.`, `استُخدمت هذه التذكرة الساعة ${fmtTime(booking.checkIn!.at)}. كل تذكرة تُمسح مرة واحدة فقط.`), { alreadyCheckedIn: true });
+  }
+  add(L("Not already used", "لم يُستخدم من قبل"), true);
+  if (booking.status === "PENDING") return fail(L("Not approved yet", "لم تتم الموافقة بعد"), L("This request hasn’t been approved, so it can’t be checked in.", "لم تتم الموافقة على هذا الطلب، لذلك لا يمكن تسجيل حضوره."));
+  if (booking.status === "AWAITING_PLAYERS") return fail(L("Players haven’t accepted", "اللاعبون لم يوافقوا"), L("Not enough players accepted this booking, so it isn’t confirmed and can’t be checked in.", "لم يوافق عدد كافٍ من اللاعبين على هذا الحجز، لذلك هو غير مؤكد ولا يمكن تسجيل حضوره."));
+  const pol = policyFor(view.facility);
+  const opens = addMinutes(new Date(booking.start), -pol.checkIn.opensMinutesBefore);
+  const closes = addMinutes(new Date(booking.start), pol.checkIn.graceMinutes);
+  const inWindow = now >= opens && now <= closes && booking.status === "CONFIRMED";
+  if (!add(L("Within the check-in window", "داخل وقت تسجيل الحضور"), inWindow)) {
+    if (now < opens) return fail(L("Too early", "مبكر جدًا"), L(`Check-in opens at ${fmtTime(opens)} (${pol.checkIn.opensMinutesBefore} min before the ${fmtTime(booking.start)} session).`, `يبدأ تسجيل الحضور الساعة ${fmtTime(opens)} (قبل موعد ${fmtTime(booking.start)} بـ${N.minute(pol.checkIn.opensMinutesBefore)}).`));
+    return fail(L("Check-in window closed", "انتهى وقت تسجيل الحضور"), booking.status === "NO_SHOW" ? L("This booking has already been marked as a no-show.", "تم تسجيل هذا الحجز كغياب بالفعل.") : L(`Check-in closed at ${fmtTime(closes)}. The student can talk to the facility supervisor.`, `انتهى تسجيل الحضور الساعة ${fmtTime(closes)}. يمكن للطالب التحدث مع مشرف المرفق.`));
+  }
+  return null;
 }
 
 export const staff = {
@@ -120,33 +163,41 @@ export const staff = {
       const student = toPublic(db.state.users.find((x) => x.id === booking.userId));
       const base = { booking: view, student };
       if (!add(L("Belongs to this student", "يخص هذا الطالب"), p.u === booking.userId && p.f === booking.facilityId && p.s === booking.start)) return fail(L("Ticket doesn’t match", "التذكرة غير مطابقة"), L("The details in this QR code don’t match the booking record.", "بيانات كود QR لا تطابق سجل الحجز."), base);
-      const here = db.state.facilities.find((f) => f.id === facilityId);
-      if (!add(L(`Booked for ${here?.name ?? "this facility"}`, `محجوز في ${here ? facilityName(here) : "هذا المرفق"}`), booking.facilityId === facilityId)) {
-        const lf = localFacility(view.facility);
-        return fail(L("Wrong facility", "مرفق مختلف"), L(`This ticket is for ${lf.name} (${lf.location.building}${lf.location.floor ? `, ${lf.location.floor}` : ""}). Please direct the student there.`, `هذه التذكرة لـ${lf.name} (${lf.location.building}${lf.location.floor ? `، ${lf.location.floor}` : ""}). من فضلك وجّه الطالب إلى هناك.`), base);
-      }
-      if (!add(L("Booked for today", "محجوز لليوم"), isSameDay(new Date(booking.start), now))) return fail(L("Wrong day", "يوم مختلف"), L(`This booking is for ${label(booking)}. It can only be used on that day.`, `هذا الحجز لموعد ${label(booking)}. لا يمكن استخدامه إلا في ذلك اليوم.`), base);
-      if (!add(L("Not cancelled", "غير ملغى"), booking.status !== "CANCELLED" && booking.status !== "EXPIRED"))
-        return fail(L("Booking cancelled", "الحجز ملغى"), L(`This booking was cancelled${booking.cancellation ? ` on ${fmtDayShort(booking.cancellation.at)} at ${fmtTime(booking.cancellation.at)}` : ""} and can’t be used.`, `تم إلغاء هذا الحجز${booking.cancellation ? ` يوم ${fmtDayShort(booking.cancellation.at)} الساعة ${fmtTime(booking.cancellation.at)}` : ""} ولا يمكن استخدامه.`), base);
-      if (booking.status === "CHECKED_IN" || booking.status === "COMPLETED") {
-        add(L("Not already used", "لم يُستخدم من قبل"), false);
-        return fail(L("Already checked in", "تم تسجيل الحضور بالفعل"), L(`This ticket was used at ${fmtTime(booking.checkIn!.at)}. Each ticket can be scanned once.`, `استُخدمت هذه التذكرة الساعة ${fmtTime(booking.checkIn!.at)}. كل تذكرة تُمسح مرة واحدة فقط.`), { ...base, alreadyCheckedIn: true });
-      }
-      add(L("Not already used", "لم يُستخدم من قبل"), true);
-      if (booking.status === "PENDING") return fail(L("Not approved yet", "لم تتم الموافقة بعد"), L("This request hasn’t been approved, so it can’t be checked in.", "لم تتم الموافقة على هذا الطلب، لذلك لا يمكن تسجيل حضوره."), base);
-      const pol = policyFor(view.facility);
-      const opens = addMinutes(new Date(booking.start), -pol.checkIn.opensMinutesBefore);
-      const closes = addMinutes(new Date(booking.start), pol.checkIn.graceMinutes);
-      const inWindow = now >= opens && now <= closes && booking.status === "CONFIRMED";
-      if (!add(L("Within the check-in window", "داخل وقت تسجيل الحضور"), inWindow)) {
-        if (now < opens) return fail(L("Too early", "مبكر جدًا"), L(`Check-in opens at ${fmtTime(opens)} (${pol.checkIn.opensMinutesBefore} min before the ${fmtTime(booking.start)} session).`, `يبدأ تسجيل الحضور الساعة ${fmtTime(opens)} (قبل موعد ${fmtTime(booking.start)} بـ${N.minute(pol.checkIn.opensMinutesBefore)}).`), base);
-        return fail(L("Check-in window closed", "انتهى وقت تسجيل الحضور"), booking.status === "NO_SHOW" ? L("This booking has already been marked as a no-show.", "تم تسجيل هذا الحجز كغياب بالفعل.") : L(`Check-in closed at ${fmtTime(closes)}. The student can talk to the facility supervisor.`, `انتهى تسجيل الحضور الساعة ${fmtTime(closes)}. يمكن للطالب التحدث مع مشرف المرفق.`), base);
-      }
-      const next = updateBooking(booking, { status: "CHECKED_IN", checkIn: { at: now.toISOString(), byUserId: u.id, method: "qr", headcount: booking.participants.length ? booking.participants.length + 1 : undefined } });
+      const refused = review(u, booking, facilityId, checks);
+      if (refused) return refused;
+      const players = playersOf(booking).length;
+      const next = updateBooking(booking, { status: "CHECKED_IN", checkIn: { at: now.toISOString(), byUserId: u.id, method: "qr", headcount: players > 1 ? players : undefined } });
       audit(u, "booking.check_in", "booking", booking.id, booking.id, `Checked in ${student.name} at ${view.facility.name} (QR scan)`);
       notify(booking.userId, "checkin_success", () => L(`Checked in at ${view.facility.name}`, `تم تسجيل حضورك في ${facilityName(view.facility)}`), () => L(`Enjoy your session — it ends at ${fmtTime(booking.end)}.`, `استمتع بوقتك — الموعد ينتهي الساعة ${fmtTime(booking.end)}.`), { link: `/bookings/${booking.id}`, data: { bookingId: booking.id } });
       return { ok: true, title: L("Check-in successful", "تم تسجيل الحضور"), message: L(`${student.name} is checked in until ${fmtTime(booking.end)}.`, `تم تسجيل حضور ${student.name} حتى الساعة ${fmtTime(booking.end)}.`), checks, booking: toView(next, u.id), student };
     });
+  },
+
+  /**
+   * When a code can't be scanned: find a booking by the reference on the
+   * student's ticket. Nothing is checked in — a reference isn't proof, so
+   * staff compare the student card first and then confirm with checkIn.
+   */
+  async lookup(reference: string, facilityId: string): Promise<ScanResult> {
+    const u = requirePermission("checkin.perform");
+    assertAssigned(u, facilityId);
+    const ref = westernDigits(reference).trim().toUpperCase();
+    const checks: ScanResult["checks"] = [];
+    // Only today’s bookings at this facility: a reference must not open up other facilities’ or other days’ records.
+    const b = ref ? db.state.bookings.find((x) => x.id.toUpperCase() === ref && x.facilityId === facilityId && isSameDay(new Date(x.start), clock.now())) : undefined;
+    checks.push({ label: L("Booked here today", "محجوز هنا اليوم"), status: b ? "pass" : "fail" });
+    if (!b) return { ok: false, title: L("Booking not found", "الحجز غير موجود"), message: L("No booking here today has this reference. Check it on the student’s ticket, or find them in today’s list.", "لا يوجد حجز هنا اليوم بهذا الرقم. راجعه على تذكرة الطالب، أو ابحث عنه في قائمة اليوم."), checks };
+    const refused = review(u, b, facilityId, checks);
+    if (refused) return refused;
+    return {
+      ok: false,
+      verify: true,
+      title: L("Check the student card", "راجع كارنيه الطالب"),
+      message: L("This wasn’t a live code, so compare the name and university ID with the student card before checking them in.", "لم يتم مسح كود مباشر، لذلك طابق الاسم والرقم الجامعي مع كارنيه الطالب قبل تسجيل حضوره."),
+      checks,
+      booking: toView(b, u.id),
+      student: toPublic(db.state.users.find((x) => x.id === b.userId)),
+    };
   },
 
   async checkIn(bookingId: string, headcount?: number) {
@@ -191,9 +242,11 @@ export const staff = {
       const b = bookingOrThrow(bookingId);
       assertAssigned(u, b.facilityId);
       if (b.status !== "NO_SHOW" || !b.noShow) throw new ApiError("CONFLICT", "This booking isn’t marked as a no-show.");
+      if (b.noShow.waived) throw new ApiError("CONFLICT", "This strike has already been waived.");
       const next = updateBooking(b, { noShow: { ...b.noShow, waived: { at: clock.now().toISOString(), byUserId: u.id, reason } } });
       audit(u, "booking.waive_no_show", "booking", b.id, b.id, `Waived no-show strike — ${reason}`);
       notify(b.userId, "noshow_warning", () => L("Missed-session strike removed", "تم إلغاء مخالفة الغياب"), () => L(`The strike for ${label(b)} was removed: ${reason}.`, `تم إلغاء المخالفة الخاصة بموعد ${label(b)}: ${reason}.`), { link: "/profile" });
+      liftAutoRestrictionIfCleared(b.userId, u);
       return toView(next, u.id);
     });
   },
@@ -270,19 +323,23 @@ export const staff = {
     const valid = today
       .filter((b) => b.facilityId === facilityId && b.status === "CONFIRMED" && now >= addMinutes(new Date(b.start), -p.checkIn.opensMinutesBefore) && now <= addMinutes(new Date(b.start), p.checkIn.graceMinutes))
       .slice(0, 3);
-    for (const b of valid) out.push({ kind: "valid", label: users.get(b.userId)?.name ?? "Student", hint: `${fmtRange(b.start, b.end)} · valid ticket`, token: await sign(b), facilityId });
+    const who = (b: Booking) => users.get(b.userId)?.name ?? L("Student", "طالب");
+    for (const b of valid) out.push({ kind: "valid", label: who(b), hint: L(`${fmtRange(b.start, b.end)} · valid ticket`, `${fmtRange(b.start, b.end)} · تذكرة صالحة`), token: await sign(b), facilityId });
     const used = today.find((b) => b.facilityId === facilityId && b.status === "CHECKED_IN");
-    if (used) out.push({ kind: "used", label: users.get(used.userId)?.name ?? "Student", hint: "Already checked in", token: await sign(used), facilityId });
+    if (used) out.push({ kind: "used", label: who(used), hint: L("Already checked in", "تم تسجيل الحضور بالفعل"), token: await sign(used), facilityId });
     const elsewhere = today.find((b) => b.facilityId !== facilityId && b.status === "CONFIRMED" && db.state.facilities.find((x) => x.id === b.facilityId)?.location.building !== f.location.building);
-    if (elsewhere) out.push({ kind: "wrong_facility", label: users.get(elsewhere.userId)?.name ?? "Student", hint: `Booked at ${db.state.facilities.find((x) => x.id === elsewhere.facilityId)?.name}`, token: await sign(elsewhere), facilityId });
+    if (elsewhere) {
+      const there = db.state.facilities.find((x) => x.id === elsewhere.facilityId);
+      out.push({ kind: "wrong_facility", label: who(elsewhere), hint: L(`Booked at ${there?.name}`, `محجوز في ${there ? facilityName(there) : ""}`), token: await sign(elsewhere), facilityId });
+    }
     const cancelled = db.state.bookings.find((b) => b.facilityId === facilityId && b.status === "CANCELLED" && isSameDay(new Date(b.start), now));
-    if (cancelled) out.push({ kind: "cancelled", label: users.get(cancelled.userId)?.name ?? "Student", hint: "Cancelled booking", token: await sign(cancelled), facilityId });
+    if (cancelled) out.push({ kind: "cancelled", label: who(cancelled), hint: L("Cancelled booking", "حجز ملغى"), token: await sign(cancelled), facilityId });
     const tomorrow = db.state.bookings.find((b) => b.facilityId === facilityId && b.status === "CONFIRMED" && isSameDay(new Date(b.start), addDays(now, 1)));
-    if (tomorrow) out.push({ kind: "wrong_day", label: users.get(tomorrow.userId)?.name ?? "Student", hint: "Booking is for tomorrow", token: await sign(tomorrow), facilityId });
+    if (tomorrow) out.push({ kind: "wrong_day", label: who(tomorrow), hint: L("Booking is for tomorrow", "الحجز لموعد الغد"), token: await sign(tomorrow), facilityId });
     const any = valid[0] ?? today.find((b) => b.facilityId === facilityId);
     if (any) {
-      out.push({ kind: "expired", label: "Screenshot of a ticket", hint: "QR from 5 minutes ago", token: await sign(any, w - 10), facilityId });
-      out.push({ kind: "tampered", label: "Edited QR code", hint: "Booking ID changed by hand", token: tamper(await sign(any), { b: "BK-2026-999999" }), facilityId });
+      out.push({ kind: "expired", label: L("Screenshot of a ticket", "لقطة شاشة لتذكرة"), hint: L("QR from 5 minutes ago", "كود QR من 5 دقائق"), token: await sign(any, w - 10), facilityId });
+      out.push({ kind: "tampered", label: L("Edited QR code", "كود QR معدّل"), hint: L("Booking ID changed by hand", "رقم الحجز متغيّر يدويًا"), token: tamper(await sign(any), { b: "BK-2026-999999" }), facilityId });
     }
     return out;
   },
@@ -291,25 +348,48 @@ export const staff = {
 /** Shared by staff closures and admin maintenance. */
 export function closeWindow(actor: User, facilityId: string, start: Date, end: Date, reason: string, kind: MaintenancePeriod["kind"]): MaintenancePeriod {
   const f = facilityOrThrow(facilityId);
-  const affected = db.state.bookings.filter((b) => b.facilityId === facilityId && (b.status === "CONFIRMED" || b.status === "PENDING") && new Date(b.start) < end && new Date(b.end) > start);
+  const inWindow = (x: { start: string; end: string }) => new Date(x.start) < end && new Date(x.end) > start;
+  const affected = db.state.bookings.filter((b) => b.facilityId === facilityId && UPCOMING_STATUSES.has(b.status) && inWindow(b));
   const m: MaintenancePeriod = { id: `MT-${200 + db.nextSeq()}`, facilityId, start: start.toISOString(), end: end.toISOString(), reason, kind, createdBy: actor.id, createdAt: clock.now().toISOString(), affectedBookingIds: affected.map((b) => b.id) };
   db.put("maintenance", m);
+  const waits = db.state.waitlist.filter((w) => w.facilityId === facilityId && (w.status === "waiting" || w.status === "offered") && inWindow(w));
+  releaseForClosure(actor, f, affected, waits, reason, `Facility ${kind === "planned" ? "maintenance" : "closed"}: ${reason}`);
+  return m;
+}
+
+/**
+ * A facility won't run these sessions: cancel the bookings without a strike,
+ * tell everyone on them — players and open invitations — and clear the
+ * waitlists for them, since those spots will never open.
+ */
+export function releaseForClosure(actor: User, f: Facility, affected: Booking[], waits: WaitlistEntry[], reason: string | (() => string), recordReason: string) {
+  const at = clock.now().toISOString();
+  // An archived facility has no page left to open.
+  const link = f.archived ? "/bookings" : `/facility/${f.id}`;
+  // A reason typed by a person is shown as written; a system reason is a function, written in each reader's language.
+  const why = (en: boolean) => (typeof reason === "function" ? reason() : en ? reason.toLowerCase() : reason);
   for (const b of affected) {
-    updateBooking(b, { status: "CANCELLED", cancellation: { at: clock.now().toISOString(), byUserId: actor.id, reason: `Facility ${kind === "planned" ? "maintenance" : "closed"}: ${reason}`, late: false, penalty: false, byRole: actor.role } });
-    for (const id of [b.userId, ...b.participants.map((p) => p.userId)]) {
+    updateBooking(b, { status: "CANCELLED", playersDeadline: undefined, cancellation: { at, byUserId: actor.id, reason: recordReason, late: false, penalty: false, byRole: actor.role } });
+    const invited = b.participants.filter((p) => p.status === "invited").map((p) => p.userId);
+    for (const id of [...playersOf(b), ...invited]) {
       notify(
         id,
         "maintenance",
         () => L(`${f.name} is closed — booking cancelled`, `${facilityName(f)} مغلق — تم إلغاء الحجز`),
-        () => L(`Your session on ${label(b)} was cancelled because ${f.name} is closed (${reason.toLowerCase()}). No strike has been recorded. We’re sorry for the disruption.`, `تم إلغاء موعدك ${label(b)} لأن ${facilityName(f)} مغلق (${reason}). لم تُسجّل عليك مخالفة. نعتذر عن الإزعاج.`),
-        { link: `/facility/${f.id}` },
+        () => L(`Your session on ${label(b)} was cancelled because ${f.name} is closed (${why(true)}). No strike has been recorded. We’re sorry for the disruption.`, `تم إلغاء موعدك ${label(b)} لأن ${facilityName(f)} مغلق (${why(false)}). لم تُسجّل عليك مخالفة. نعتذر عن الإزعاج.`),
+        { link },
       );
     }
   }
-  // Anyone waiting for these sessions will not get a spot.
-  for (const w of db.state.waitlist) {
-    if (w.facilityId === facilityId && (w.status === "waiting" || w.status === "offered") && new Date(w.start) < end && new Date(w.end) > start) db.put("waitlist", { ...w, status: "cancelled" });
+  for (const w of waits) {
+    db.put("waitlist", { ...w, status: "cancelled" });
+    notify(
+      w.userId,
+      "waitlist_expired",
+      () => L(`${f.name} is closed — waitlist cleared`, `${facilityName(f)} مغلق — تم إلغاء قائمة الانتظار`),
+      () => L(`You were waiting for ${label(w)}, but ${f.name} is closed then (${why(true)}), so no spot will open. Please pick another time.`, `كنت في قائمة الانتظار لموعد ${label(w)}، لكن ${facilityName(f)} مغلق وقتها (${why(false)})، لذلك لن يتوفر مكان. من فضلك اختر وقتًا آخر.`),
+      { link },
+    );
   }
-  return m;
 }
 

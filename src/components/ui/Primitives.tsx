@@ -170,8 +170,10 @@ export function EmptyState({ icon: Icon, title, body, action, className, compact
 }
 
 /** Human error messaging — technical details never reach students. */
-export function ErrorState({ error, onRetry, className, compact }: { error: unknown; onRetry?: () => void; className?: string; compact?: boolean }) {
+export function ErrorState({ error, onRetry, className, compact, action }: { error: unknown; onRetry?: () => void; className?: string; compact?: boolean; action?: ReactNode }) {
   const e = error instanceof ApiError ? error : null;
+  // Trying again can't bring back something that isn't there.
+  const retry = e?.code === "NOT_FOUND" ? undefined : onRetry;
   const network = e?.code === "NETWORK";
   const title = network ? t("You’re offline") : e?.code === "FORBIDDEN" ? t("You don’t have access") : e?.code === "NOT_FOUND" ? t("We couldn’t find that") : t("Something went wrong");
   const body = e?.message ?? t("We couldn’t load this right now. Please try again in a moment.");
@@ -180,11 +182,12 @@ export function ErrorState({ error, onRetry, className, compact }: { error: unkn
       <div className={cn("mb-4 flex size-14 items-center justify-center rounded-2xl", network ? "bg-info-soft text-info" : "bg-danger-soft text-danger")}>{network ? <WifiOff className="size-6" /> : <AlertTriangle className="size-6" />}</div>
       <h3 className="text-base font-bold text-ink">{title}</h3>
       <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-muted">{body}</p>
-      {onRetry && (
-        <Button variant="secondary" size="sm" className="mt-5" icon={<RotateCw className="size-4" />} onClick={onRetry}>
+      {retry && (
+        <Button variant="secondary" size="sm" className="mt-5" icon={<RotateCw className="size-4" />} onClick={retry}>
           {t("Try again")}
         </Button>
       )}
+      {action && <div className="mt-5">{action}</div>}
     </div>
   );
 }

@@ -37,9 +37,47 @@ Booking for Badya University's sports courts and Activity Center — tennis, pad
 - الموظفون والمسؤولون غير مربوطين بجهاز (لأجهزة المسح المشتركة).
 - عدد الأجهزة لكل طالب ونطاقات الإيميل المسموحة تتغير من **الإعدادات ← الأمان**.
 
+### قائمة الطلاب الرسمية — مهمة جدًا
+
+**التسجيل مقفول لحد ما ترفع القائمة.** اطلب من شؤون الطلاب ملف Excel فيه **الرقم الجامعي** (ويا ريت كمان الاسم بالعربي والإنجليزي والإيميل والكلية والسنة والمرحلة والحالة و**الرقم القومي**)، واحفظه **CSV**، وارفعه من **لوحة الإدارة ← الطلاب ← قائمة الطلاب الرسمية** (زرار **النموذج** بيوضّح الأعمدة، والعناوين بالعربي شغالة). قبل ما أي حاجة تتحفظ هتشوف معاينة: كل سطر فيه مشكلة برقمه، والأرقام المكررة، واللي هيتغير في الحسابات الموجودة. **لو في أي سطر غلط مفيش حاجة بتتحمّل** — صلّح الأسطر وارفع تاني. بعد الرفع:
+
+- محدش يقدر يسجّل أو يحجز أو يتدعى لحجز إلا لو رقمه الجامعي في القائمة ونشط، ولو الإيميل موجود في القائمة لازم يطابق.
+- **الرقم القومي:** لو موجود في القائمة (كامل أو آخر 4 أرقام)، التسجيل بيطلب آخر 4 أرقام — يعني معرفة الرقم الجامعي والإيميل بتاع حد مش كفاية عشان تسجّل باسمه. البرنامج بيحتفظ ببصمة مشفّرة بس (`ROSTER_SECRET`). 5 محاولات غلط بتوقف الرقم ده يوم، ورفع القائمة من جديد بيلغي الإيقاف.
+- الاسم والكلية والسنة بتتاخد من القائمة مش من اللي الطالب كتبه، وكل رفع بيحدّث الحسابات الموجودة — إلا الكلية أو السنة اللي المكتب صحّحها بإيده.
+- الحسابات اللي مش في القائمة أو غير نشطة فيها أو بإيميل مختلف بتظهر في نفس الكارت، وأول نوعين مبيقدروش يحجزوا.
+- ارفع القائمة من جديد كل ترم (الملف الجديد بيحل محل القديم). مسح القائمة بيقفل التسجيل تاني (الحسابات الموجودة بتفضل شغالة).
+
+### حسابات الطلاب
+
+من صفحة الطالب في **لوحة الإدارة ← الطلاب**:
+
+- **إيقاف الحساب** — للاطلاع بس: يشوف حجوزاته ويلغيها لكن ميحجزش ولا يدخل قوائم انتظار ولا يدعي حد ولا يتدعى. الدعوات المفتوحة وأماكن الانتظار بتنتهي، والحجوزات بتفضل إلا لو اخترت إلغاءها. ترفع الإيقاف في أي وقت.
+- **إغلاق الحساب** — للخريجين أو لحساب حد تاني سجّله: بيخرج من كل الأجهزة، والحجوزات الجاية بتتلغي، والسجل بيفضل، والإيميل والرقم الجامعي بيتحرروا عشان الطالب الحقيقي يسجّل. ممكن يتفتح تاني لو محدش أخدهم.
+- **تصحيح البيانات** — الكلية والسنة (الطالب مبيقدرش يغيّرهم). التصحيح بيفضل بعد رفع القائمة الجديدة، و«استخدام القيمة الرسمية» بيرجّع قيمة القائمة.
+
+### إيقاف المرافق وأنواعها
+
+من **لوحة الإدارة ← المرافق**: افتح المرفق واختار **أرشفة المرفق**. المرفق المؤرشف بيختفي عند الطلاب والموظفين ومبيتحجزش؛ الحجوزات الجاية بتظهر الأول وبتتلغي من غير مخالفة (والطلاب بيتبلغوا) بعد ما تأكد بس. الحجوزات وقوائم الانتظار وسجل التدقيق بتفضل، و**استعادة** بترجّعه زي ما كان. المرفق اللي عمره ما اتحجز ولا عليه بلاغات أو صيانة ممكن **يتحذف** بدل الأرشفة. نوع المرافق بيتأرشف لما ميبقاش فيه مرافق شغالة، وبيتحذف بس لو مفيش ولا مرفق (حتى المؤرشف) بيستخدمه.
+
+### تسجيل الحضور
+
+الموظف بيمسح كود QR المباشر من موبايل الطالب (بيتغير كل 30 ثانية فالسكرين شوت مبيشتغلش). الكاميرا شغالة على Chrome في أندرويد **و**على آيفون (Safari أو Chrome) — الصفحة بتقرا الكود بنفسها لو المتصفح مبيعرفش — ومحتاجة البرنامج يكون على **HTTPS**. لو الكاميرا مش متاحة: **التقط صورة للكود**، أو **اكتب رقم الحجز** المكتوب على التذكرة — وساعتها لازم الطالب يوريك الكارنيه قبل ما تأكد الحضور — أو دوّر عليه في قائمة اليوم.
+
+### الحجز الجماعي والدعوات
+
+- اللي بيحجز بيضيف اللاعبين بالاسم أو الرقم الجامعي، وكل لاعب **بيوصله دعوة ويوافق من موبايله**. الدعوة مبتتحسبش من حدود اللاعب غير لما يوافق، ووقتها بتتراجع حدوده هو (اليومي، والأسبوعي، والمتتالي، وفترة الراحة).
+- في الملاعب اللي ليها حد أدنى (تنس وبادل: 2، كورة: 6)، الحجز بيفضل **"في انتظار اللاعبين"** لحد ما العدد يكمل، ولو ماكملش في **مهلة القبول** (افتراضيًا 60 دقيقة، وتتعدل من قواعد الحجز) الحجز بيتلغي من غير مخالفة والميعاد بيرجع متاح.
+- لو لاعب خرج والعدد نزل عن الحد الأدنى، الحجز بيرجع "في انتظار اللاعبين" بمهلة جديدة. يعني مينفعش حد يحجز الملعب كله لوحده.
+
+### الإشعارات على الموبايل
+
+- من **الملف الشخصي ← الإشعارات على هذا الموبايل ← فعّل الإشعارات**. بعدها التذكيرات والدعوات وعروض قائمة الانتظار بتوصل للموبايل زي رسايل أي تطبيق، حتى لو التطبيق مقفول. لازم الموقع يكون على HTTPS.
+- **أندرويد:** بتشتغل من Chrome على طول.
+- **آيفون (iOS 16.4 أو أحدث):** لازم الطالب يضيف التطبيق للشاشة الرئيسية الأول (زرار المشاركة ← إضافة إلى الشاشة الرئيسية) ويفعّل الإشعارات من هناك. التطبيق على الشاشة الرئيسية بيعتبره الآيفون متصفح منفصل، فالأحسن الطالب **يعمل حسابه من التطبيق اللي على الشاشة الرئيسية**. ولو كان عامل حسابه من Safari، هيظهر كجهاز جديد ويحتاج موافقة من **الأجهزة** مرة واحدة.
+
 ### الملاعب والمواعيد
 
-الملاعب والترابيزات الحقيقية مُعدّة مسبقًا (ملعب تنس، ملعبا بادل، ملعب كرة قدم، ملعب كرة طائرة، ترابيزتا بينج بونج، ترابيزة بلياردو، ترابيزة إير هوكي). كل شيء يتعدّل من لوحة الإدارة من غير برمجة: مواعيد العمل، مدة الحجز، عدد اللاعبين، القواعد، المكان على الخريطة، والمحتوى العربي (قسم **المحتوى العربي** في صفحة المرفق). قواعد الحجز (الحدود اليومية والأسبوعية، المواعيد المتتالية، الإلغاء، الغياب) من **قواعد الحجز**.
+الملاعب والترابيزات الحقيقية مُعدّة مسبقًا (ملعب تنس، ملعبا بادل، ملعب كرة قدم، ملعب كرة طائرة، ترابيزتا بينج بونج، ترابيزة بلياردو، ترابيزة إير هوكي). **كلها مفتوحة من 9 الصبح لـ 3 العصر، وكل ميعاد نص ساعة** (آخر ميعاد بيبدأ 2:30)، والأكتيفيتي سنتر مقفول الجمعة. المميزات المعروضة: مقاعد (تنس وكورة)، وتكييف وأدوات ومقاعد (الأكتيفيتي سنتر). **حجز كل يوم جديد بيفتح الساعة 9 الصبح** لكل الناس في نفس اللحظة، بدل 12 بالليل. كل شيء يتعدّل من لوحة الإدارة من غير برمجة: مواعيد العمل، مدة الحجز، عدد اللاعبين، القواعد، المكان على الخريطة، والمحتوى العربي (قسم **المحتوى العربي** في صفحة المرفق). قواعد الحجز (الحدود اليومية والأسبوعية، المواعيد المتتالية، الإلغاء، الغياب، ساعة فتح الحجز، مهلة القبول) من **قواعد الحجز**.
 
 ### الأمان — مهم قبل التشغيل
 
@@ -97,7 +135,7 @@ On Linux: `npm ci`, `npm run build`, `npm start`.
 | `TIMEZONE` | Campus time zone (default `Africa/Cairo`). |
 | `TRUST_PROXY` | Read the client IP from `X-Forwarded-For` (default on in production). |
 
-Session and QR-signing secrets are generated into `DATA_DIR/secrets.json` on first start.
+Session, QR-signing and student-list (`ROSTER_SECRET`) secrets are generated into `DATA_DIR/secrets.json` on first start — back that file up with the database. If `ROSTER_SECRET` ever changes, load the student list again.
 
 ### Reverse proxy example (Caddy)
 
@@ -140,6 +178,49 @@ Caddy obtains the HTTPS certificate itself. With IIS, use URL Rewrite + Applicat
 - **Reset devices** from a student's page in the admin console (e.g. a lost phone); the next device they sign in on becomes theirs.
 - Staff and administrators aren't tied to a device, so shared scanner phones work.
 
+### Official student list — upload it before launch
+
+**Registration is closed until a list is loaded.** Ask Student Affairs for a spreadsheet with the **university ID** — ideally also the name (English and Arabic), email, faculty, year, level, status (active, graduated…) and the **national ID** — save it as **CSV** (CSV UTF-8, or plain CSV from Arabic Excel), and upload it under **Admin → Students → Official student list** (the **Template** button shows the columns; Arabic headers work too). Before anything is saved you see a preview: every unusable line with its line number, repeated IDs, and what changes for existing accounts. **A file with any problem loads nothing** — fix those lines and upload it again. Once it's loaded:
+
+- Only listed, active university IDs can register, book or be invited; where the list has an email, it must match.
+- **National ID:** where the list has it (the full number or its last 4 digits), registration asks for the last 4 digits — knowing someone's university ID and email is no longer enough to register as them. Only a keyed fingerprint of the digits is stored (see `ROSTER_SECRET`). Five wrong tries pause that ID for a day; loading the list again lifts the pause.
+- Name, faculty and year come from the list, not from what the student typed, and every upload updates existing accounts too — except a faculty or year the office corrected by hand.
+- Accounts that aren't on the list, are inactive on it, or use a different email are shown on the same card; the first two can't book or be invited.
+- Upload a fresh list each term — it replaces the previous one. Removing the list closes registration again (existing accounts keep working).
+
+### Student accounts
+
+From a student's page (**Admin → Students**):
+
+- **Suspend** — read-only: they can see and cancel their bookings but can't book, join waitlists, invite or be invited. Open invitations and waitlist places end; their bookings stay unless you tick *Also cancel*. Lift it any time.
+- **Close account** — for graduates, or an account someone else registered: signed out everywhere, upcoming bookings cancelled, history kept, and the email and university ID freed so the real student can register. It can be reopened if nobody else has taken them since.
+- **Correct details** — faculty and year (students can't change these). Corrections are marked as the office's and survive the next list upload; *Use official value* goes back to the list.
+
+### Retiring facilities and facility types
+
+In **Admin → Facilities**, open a facility and choose **Archive facility**. Archived facilities disappear for students and staff and can't be booked; upcoming bookings are listed first and cancelled without a strike (the students are told) only once you confirm. Bookings, waitlists and the audit trail are kept, and **Restore** brings the facility back as it was. A facility that has never had a booking, waitlist, issue or maintenance entry can be **deleted** instead. A facility type can be archived once none of its facilities are live, and deleted only if no facility — archived ones included — uses it.
+
+### Checking in
+
+Staff scan the student's live QR code (it changes every 30 seconds, so screenshots don't work). The camera works in Chrome on Android **and** on iPhone (Safari or Chrome) — the page decodes the code itself where the browser can't — and needs the app on **HTTPS**. Without a camera: **Take a photo of the code**, or **Enter the booking reference** printed on the ticket — the student then shows their student card before you confirm — or find them in today's list.
+
+### Group bookings and invitations
+
+- The booker adds players by name or university ID; each player **gets an invitation and accepts from their own phone**. Nothing counts towards a player's limits until they accept, and accepting checks their own daily, weekly, back-to-back and rest rules.
+- Where a facility has a minimum (tennis and padel 2, football 6), the booking **waits for players** until enough accept. If they don't within the **time to accept** (60 minutes by default, set under Booking rules), it's cancelled without a strike and the session reopens.
+- If a player leaves and the booking drops below the minimum, it goes back to waiting for players with a new deadline — nobody can hold a pitch alone.
+
+### Notifications on the phone
+
+- **Profile → Notifications on this phone → Turn on notifications.** Reminders, invitations and waitlist offers then arrive like messages from any other app, even when the app is closed. Requires HTTPS.
+- **Android:** works straight from Chrome.
+- **iPhone (iOS 16.4+):** the student adds the app to the Home Screen first (Share → Add to Home Screen) and turns notifications on from there. iOS treats the Home Screen app as a separate browser, so students should **create their account in the Home Screen app**; one who registered in Safari first will show up once under **Devices** for approval.
+- Push keys are generated into `DATA_DIR/secrets.json` on first start, next to the other secrets.
+
+### Opening hours
+
+All courts and tables are open **09:00–15:00** in **30-minute sessions** (the last starts at 14:30); the Activity Center is closed on Fridays. Databases from earlier versions are moved to the current hours, session length and amenities when the server starts, unless an administrator had changed them. **Each new day opens for booking at 09:00** — the same moment for everyone, instead of midnight. Hours, the opening hour and the time to accept are editable in the admin console.
+
 ### Security checklist
 
 - **Serve it only over HTTPS.** When the reverse proxy runs on the same machine, set `HOST=127.0.0.1` so nobody can reach the app directly. The client IP is taken from `X-Forwarded-For` only when the request comes from a local or private-network proxy.
@@ -149,7 +230,8 @@ Caddy obtains the HTTPS certificate itself. With IIS, use URL Rewrite + Applicat
 - **Staff** can only work on their assigned facilities. **Administrators** can't edit, demote or suspend a super admin, and at least one active super admin always remains.
 - Temporary passwords (set by an administrator, or generated at first start) must be changed at the next sign-in.
 - 8 wrong passwords from one network pause sign-in from that network for 15 minutes (40 from anywhere pause the account); both are written to the audit log.
-- Students can't look up other students' schedules; searching for teammates needs a full university ID or three letters of a name, and IDs come back masked. Anyone added to a booking can remove themselves.
+- Students can't look up other students' schedules; searching for teammates needs a full university ID or three letters of a name, and IDs come back masked. Invited players accept or decline from their own phone, and the booker never learns why someone can't join.
+- The server only sends push messages to the real push services (Google, Apple, Mozilla, Microsoft), so a browser can't point it at addresses inside the university network.
 
 ### Backups and restore
 

@@ -11,6 +11,8 @@ import { BRAND_ASSETS, BrandLockup } from "@/components/brand/Brand";
 import { Button } from "@/components/ui/Button";
 import { Field, Input, Select, Textarea } from "@/components/ui/Form";
 import { t as tr, tStored } from "@/i18n";
+import { needsHomeScreen } from "@/lib/push";
+import { westernDigits } from "@/lib/roster";
 
 const ROLE_ICON = { student: GraduationCap, staff: ScanLine, admin: LayoutDashboard, super_admin: ShieldCheck };
 const PENDING_KEY = "bs-device-request";
@@ -39,6 +41,14 @@ function savePending(v: { requestId: string; reason: string } | null) {
 
 const message = (e: unknown) => (e instanceof ApiError ? e.message : tr("We couldn’t sign you in. Please try again."));
 
+/** Back to the page the person was on before signing in — if their role can open it — else their home. */
+function destinationFor(role: SessionUser["role"], from: string | undefined): string {
+  if (!from) return homeFor(role);
+  const area = from.startsWith("/admin") ? "admin" : from.startsWith("/staff") ? "staff" : "student";
+  const allowed = role === "student" ? area === "student" : role === "staff" ? area === "staff" : area !== "student";
+  return allowed ? from : homeFor(role);
+}
+
 export function LoginPage() {
   const user = useSession((s) => s.user);
   const notice = useSession((s) => s.notice);
@@ -50,20 +60,22 @@ export function LoginPage() {
   const [step, setStep] = useState<Step>(() => readPending() ?? { kind: "signin" });
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
-  const [profile, setProfile] = useState({ name: "", nameAr: "", email: "", universityId: "", faculty: "", year: 1, level: "undergraduate" as "undergraduate" | "postgraduate", password: "", confirm: "" });
+  const [profile, setProfile] = useState({ name: "", nameAr: "", email: "", universityId: "", faculty: "", year: 1, level: "undergraduate" as "undergraduate" | "postgraduate", password: "", confirm: "", nationalIdLast4: "" });
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
+  /** The official list has national-ID digits: registration asks for the last 4. */
+  const idCheck = !!config.data?.idCheck;
 
-  if (user) return <Navigate to={homeFor(user.role)} replace />;
+  // Signing in sets the user before `finish` navigates — this must agree with it, or it wins the race.
+  if (user) return <Navigate to={destinationFor(user.role, from)} replace />;
 
   const finish = (u: SessionUser) => {
     savePending(null);
     adoptAccountLanguage(u.preferences?.language);
     queryClient.clear();
     useSession.getState().setUser(u);
-    const dest = from && ((u.role === "student" && !from.startsWith("/admin") && !from.startsWith("/staff")) || (u.role !== "student" && (from.startsWith("/admin") || from.startsWith("/staff")))) ? from : homeFor(u.role);
-    nav(dest, { replace: true });
+    nav(destinationFor(u.role, from), { replace: true });
   };
 
   const handle = (r: SignInResult) => {
@@ -105,10 +117,11 @@ export function LoginPage() {
   const register = (e: FormEvent) => {
     e.preventDefault();
     if (!profile.faculty) return setError(tr("Choose your faculty."));
+    if (idCheck && !/^\d{4}$/.test(profile.nationalIdLast4)) return setError(tr("Enter the last 4 digits of your national ID."));
     if (profile.password.length < MIN_PASSWORD) return setError(tr("Use a password of at least {n} characters.", { n: MIN_PASSWORD }));
     if (profile.password !== profile.confirm) return setError(tr("The two passwords don’t match."));
-    const { confirm: _confirm, ...p } = profile;
-    run("register", async () => handle(await api.auth.register({ ...p, nameAr: p.nameAr || undefined })));
+    const { confirm: _confirm, nationalIdLast4, ...p } = profile;
+    run("register", async () => handle(await api.auth.register({ ...p, nameAr: p.nameAr || undefined, nationalIdLast4: idCheck ? nationalIdLast4 : undefined })));
   };
 
   const contact = (e: FormEvent) => {
@@ -118,6 +131,8 @@ export function LoginPage() {
   };
 
   const demoAccounts = config.data?.demo ? config.data.demoAccounts : [];
+  /** Registration is open only once the official student list is loaded. */
+  const registrationClosed = config.data?.studentList === false;
   const domains = config.data?.allowedEmailDomains ?? ["badya.edu.eg"];
   const supportEmail = config.data?.supportEmail;
 
@@ -180,8 +195,8 @@ export function LoginPage() {
                   <h2 className="font-display text-4xl text-ink">{tr("Welcome")}</h2>
                   <p className="mt-2 text-sm text-muted">{tr("Sign in with your account. You only do this once — after that the app opens straight away on this phone.")}</p>
                   <div className="mt-6 space-y-4">
-                    <Field label={tr("University ID or email")} htmlFor="identifier">
-                      <Input id="identifier" autoComplete="username" autoCapitalize="none" autoFocus value={identifier} onChange={(e) => setIdentifier(e.target.value)} invalid={!!error} leading={<IdCard className="size-4" />} />
+                    <Field label={tr("University ID")} htmlFor="identifier" hint={tr("Staff and administrators sign in with their email.")}>
+                      <Input id="identifier" autoComplete="username" autoCapitalize="none" autoFocus dir="ltr" value={identifier} onChange={(e) => setIdentifier(e.target.value)} invalid={!!error} leading={<IdCard className="size-4" />} />
                     </Field>
                     <Field label={tr("Password")} htmlFor="password">
                       <PasswordInput id="password" autoComplete="current-password" value={password} onChange={setPassword} invalid={!!error} />
@@ -204,7 +219,19 @@ export function LoginPage() {
               {step.kind === "register" && (
                 <form onSubmit={register} noValidate>
                   <h2 className="font-display text-4xl text-ink">{tr("Create your account")}</h2>
-                  <p className="mt-2 text-sm text-muted">{tr("Students of the university only. Use your real details — the facilities office checks them against your student card.")}</p>
+                  <p className="mt-2 text-sm text-muted">{tr("Students of the university only. Your university ID must be on the official student list — your name, faculty and year are taken from it where it has them.")}</p>
+                  {registrationClosed && (
+                    <p role="status" className="mt-4 flex gap-2 rounded-2xl bg-warning-soft p-3.5 text-sm leading-relaxed text-ink-2">
+                      <Info className="mt-0.5 size-4 shrink-0 text-warning" />
+                      {tr("Registration isn’t open yet — the facilities office hasn’t loaded the official student list. Please try again later.")}
+                    </p>
+                  )}
+                  {needsHomeScreen() && (
+                    <p className="mt-4 flex gap-2 rounded-2xl bg-info-soft p-3.5 text-xs leading-relaxed text-ink-2">
+                      <Smartphone className="mt-0.5 size-4 shrink-0 text-info" />
+                      {tr("On iPhone? Add Badya Spaces to your Home Screen first (Share → Add to Home Screen) and create your account from there — that’s where notifications work, and your account stays on the app you create it in.")}
+                    </p>
+                  )}
                   <div className="mt-6 space-y-4">
                     <Field label={tr("Full name (English)")} htmlFor="name" hint={tr("As it appears on your student ID.")}>
                       <Input id="name" autoComplete="name" value={profile.name} onChange={(e) => setProfile({ ...profile, name: e.target.value })} />
@@ -215,10 +242,15 @@ export function LoginPage() {
                     <Field label={tr("University email")} htmlFor="email" hint={tr("Use your {join} address.", { join: domains.map((d) => "@" + d).join(tr(" or ")) })}>
                       <Input id="email" type="email" inputMode="email" autoComplete="email" dir="ltr" placeholder={tr("name@{v}", { v: domains[0] })} value={profile.email} onChange={(e) => setProfile({ ...profile, email: e.target.value })} leading={<Mail className="size-4" />} />
                     </Field>
-                    <Field label={tr("University ID")} htmlFor="uid">
-                      <Input id="uid" inputMode="numeric" dir="ltr" value={profile.universityId} onChange={(e) => setProfile({ ...profile, universityId: e.target.value.replace(/\D/g, "") })} />
+                    <Field label={tr("University ID")} htmlFor="uid" hint={config.data?.studentList ? tr("It must be on the university’s official student list — copy it from your student card.") : tr("As it appears on your student card.")}>
+                      <Input id="uid" inputMode="numeric" dir="ltr" value={profile.universityId} onChange={(e) => setProfile({ ...profile, universityId: westernDigits(e.target.value).replace(/\D/g, "") })} />
                     </Field>
-                    <Field label={tr("Faculty")} htmlFor="faculty">
+                    {idCheck && (
+                      <Field label={tr("National ID — last 4 digits")} htmlFor="nid" hint={tr("Proves this university ID is yours. It’s checked against the university’s records; what you type isn’t stored.")}>
+                        <Input id="nid" inputMode="numeric" autoComplete="off" dir="ltr" maxLength={4} value={profile.nationalIdLast4} onChange={(e) => setProfile({ ...profile, nationalIdLast4: westernDigits(e.target.value).replace(/\D/g, "").slice(0, 4) })} />
+                      </Field>
+                    )}
+                    <Field label={tr("Faculty")} htmlFor="faculty" hint={config.data?.studentList ? tr("If the official list has your faculty and year, those are used.") : undefined}>
                       <Select id="faculty" value={profile.faculty} onChange={(e) => setProfile({ ...profile, faculty: e.target.value })}>
                         <option value="">{tr("Choose your faculty")}</option>
                         {(config.data?.faculties ?? []).map((f) => (
@@ -257,7 +289,7 @@ export function LoginPage() {
                     <Smartphone className="mt-0.5 size-4 shrink-0 text-brand" />
                     {tr("Your account will be linked to this phone and stay signed in. Moving it to another phone later needs approval from the facilities office.")}
                   </p>
-                  <Button type="submit" size="lg" block className="mt-4" loading={loading === "register"} iconRight={<ArrowRight className="size-4" />}>
+                  <Button type="submit" size="lg" block className="mt-4" disabled={registrationClosed} loading={loading === "register"} iconRight={<ArrowRight className="size-4" />}>
                     {tr("Create my account")}
                   </Button>
                   <p className="mt-4 text-center text-sm text-muted">

@@ -3,7 +3,9 @@ import { ALL_POLICY_FIELDS } from "@/domain/policy";
 import { ApiError } from "@/api/types";
 import { localizeDeep } from "@/domain/localize";
 import { api } from "./api";
+import { db } from "./api/db";
 import { GLOBAL_POLICY } from "./api/seed/catalog";
+import { requestContext } from "./context";
 
 /**
  * The only functions reachable over HTTP, each with a schema for its
@@ -24,7 +26,10 @@ const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 const MOTIFS = ["football", "basketball", "tennis", "padel", "pool", "gym", "study", "pods", "meeting", "studio", "lab", "computer", "gaming", "music", "tabletennis", "volleyball", "billiards", "airhockey", "generic"] as const;
 const AMENITIES = ["floodlights", "changing_rooms", "showers", "lockers", "equipment", "water", "ac", "wifi", "screen", "whiteboard", "power", "accessible", "parking", "seating", "sound", "first_aid", "coach", "towels"] as const;
 const PERMISSIONS = ["facility.view", "booking.create", "booking.cancel.own", "waitlist.join", "schedule.view", "checkin.perform", "noshow.mark", "facility.report_issue", "facility.close_temporarily", "facility.manage", "category.manage", "booking.manage", "student.manage", "policy.manage", "maintenance.manage", "waitlist.manage", "fairness.review", "analytics.view", "audit.view", "staff.manage", "settings.manage", "policy.global.manage", "admin.manage", "role.manage", "security.manage"] as const;
-const STATUSES = ["PENDING", "CONFIRMED", "CHECKED_IN", "COMPLETED", "CANCELLED", "NO_SHOW", "EXPIRED", "WAITLISTED"] as const;
+const STATUSES = ["AWAITING_PLAYERS", "PENDING", "CONFIRMED", "CHECKED_IN", "COMPLETED", "CANCELLED", "NO_SHOW", "EXPIRED", "WAITLISTED"] as const;
+
+/** A browser's push subscription, as PushSubscription.toJSON() gives it. */
+const pushSubscription = z.object({ endpoint: z.string().url().max(1000), expirationTime: z.number().nullable().optional(), keys: z.object({ p256dh: z.string().min(40).max(200), auth: z.string().min(10).max(100) }).strict() });
 
 /**
  * Booking rules are validated against the real policy shape: every key must
@@ -96,6 +101,8 @@ const facility = z
     access: z.object({ audiences: z.array(z.enum(["undergraduate", "postgraduate", "faculty_member", "staff"])).max(4), faculties: z.array(text(80)).max(40).nullable(), minYear: int(1, 7).nullable() }).strict(),
     status: z.enum(["active", "inactive"]),
     inactiveReason: text(200).optional(),
+    // Accepted so a stored facility can be sent back as is; the server keeps its own value.
+    archived: z.object({ at: text(40), byUserId: id, reason: text(300).optional(), previousStatus: z.enum(["active", "inactive"]) }).strict().optional(),
     createdAt: text(40),
     updatedAt: text(40),
     ar: facilityArabic.optional(),
@@ -114,6 +121,7 @@ const category = z
     policy: policy(true),
     sortOrder: int(0, 1000),
     active: z.boolean(),
+    archived: z.object({ at: text(40), byUserId: id }).strict().optional(),
     ar: z.object({ description: text(500).optional() }).strict().optional(),
   })
   .strict();
@@ -167,7 +175,7 @@ const REGISTRY: Record<string, Record<string, MethodSpec>> = {
   auth: {
     config: P(),
     signIn: P(text(200), text(200)),
-    register: P(z.object({ name: text(100), nameAr: text(100).optional(), email: text(200), universityId: text(20), faculty: text(80), year: int(1, 7), level: z.enum(["undergraduate", "postgraduate"]), password: text(200) }).strict()),
+    register: P(z.object({ name: text(100), nameAr: text(100).optional(), email: text(200), universityId: text(20), faculty: text(80), year: int(1, 7), level: z.enum(["undergraduate", "postgraduate"]), password: text(200), nationalIdLast4: text(12).optional() }).strict()),
     contactAdmin: P(text(2000), text(500).optional()),
     deviceRequestStatus: P(id),
     cancelDeviceRequest: P(id),
@@ -189,6 +197,9 @@ const REGISTRY: Record<string, Record<string, MethodSpec>> = {
     create: M(z.object({ facilityId: id, start: iso, participantIds: z.array(id).max(60), purpose: text(500).optional(), idempotencyKey: text(100) }).strict()),
     cancel: M(id, text(300)),
     leave: M(id),
+    respond: M(id, z.enum(["accept", "decline"])),
+    invite: M(id, z.array(id).min(1).max(60)),
+    uninvite: M(id, id),
     qr: M(id),
   },
   waitlist: {
@@ -206,10 +217,14 @@ const REGISTRY: Record<string, Record<string, MethodSpec>> = {
     updatePreferences: M(z.object({ reminderMinutes: int(5, 2880), waitlistAlerts: z.boolean(), emailDigest: z.boolean(), language: z.enum(["en", "ar"]) }).partial().strict()),
     searchStudents: M(text(100)),
     teammates: M(),
+    subscribePush: M(pushSubscription),
+    unsubscribePush: M(),
+    testPush: M(),
   },
   staff: {
     overview: M(),
     scan: M(text(2000), id),
+    lookup: M(text(40), id),
     checkIn: M(id, int(1, 200).optional()),
     markNoShow: M(id),
     undoNoShow: M(id, text(300)),
@@ -223,9 +238,16 @@ const REGISTRY: Record<string, Record<string, MethodSpec>> = {
     dashboard: M(),
     facilities: M(),
     facility: M(id),
-    saveFacility: M(facility, z.boolean()),
+    saveFacility: M(facility, z.boolean(), z.boolean().optional()),
     setFacilityStatus: M(id, z.enum(["active", "inactive"]), text(200).optional()),
     saveCategory: M(category, z.boolean()),
+    archiveFacility: M(id, text(300).optional(), z.boolean().optional()),
+    restoreFacility: M(id),
+    deleteFacility: M(id),
+    categories: M(),
+    archiveCategory: M(id),
+    restoreCategory: M(id),
+    deleteCategory: M(id),
     policies: M(),
     updateGlobalPolicy: M(policy(false), text(2000)),
     updateCategoryPolicy: M(id, policy(true), text(2000)),
@@ -236,6 +258,12 @@ const REGISTRY: Record<string, Record<string, MethodSpec>> = {
     decide: M(id, z.enum(["approved", "rejected"]), text(300).optional()),
     students: M(z.object({ q: text(100).optional(), level: text(20).optional(), faculty: text(80).optional(), page: int(1, 100_000).optional() }).strict()),
     student: M(id),
+    suspendStudent: M(id, text(300), z.boolean().optional()),
+    unsuspendStudent: M(id, text(300).optional()),
+    deactivateStudent: M(id, text(300)),
+    reactivateStudent: M(id, text(300).optional()),
+    updateStudent: M(id, z.object({ faculty: text(80).optional(), year: int(1, 7).optional() }).strict()),
+    useOfficialValue: M(id, z.enum(["faculty", "year"])),
     restrict: M(id, int(1, 365), text(300)),
     liftRestriction: M(id, text(300)),
     waiveStrike: M(id, text(300)),
@@ -243,6 +271,10 @@ const REGISTRY: Record<string, Record<string, MethodSpec>> = {
     decideDeviceRequest: M(id, z.enum(["approved", "rejected"]), text(300).optional()),
     resetStudentDevices: M(id, text(300)),
     resetPassword: M(id),
+    roster: M(),
+    previewRoster: M(text(12_000_000)),
+    importRoster: M(text(12_000_000)),
+    clearRoster: M(text(300)),
     flags: M(),
     resolveFlag: M(id, z.enum(["dismissed", "warned", "restricted"]), text(300)),
     maintenance: M(),
@@ -283,6 +315,9 @@ export async function dispatch(ns: string, method: string, rawArgs: unknown): Pr
   const spec = Object.prototype.hasOwnProperty.call(REGISTRY, ns) && Object.prototype.hasOwnProperty.call(REGISTRY[ns], method) ? REGISTRY[ns][method] : undefined;
   const fn = spec && (api as unknown as Record<string, Record<string, (...a: unknown[]) => unknown>>)[ns]?.[method];
   if (!spec || typeof fn !== "function") throw new ApiError("NOT_FOUND", "Unknown request.");
+  // A temporary password (handed over in person) must be replaced before anything else — not only in the app's dialog.
+  const caller = requestContext.getStore()?.userId;
+  if (caller && ns !== "auth" && db.state.credentials.find((c) => c.id === caller)?.temporary) throw new ApiError("FORBIDDEN", "Choose a new password before you continue.");
   if (!Array.isArray(rawArgs) || rawArgs.length > spec.args.length) throw new ApiError("VALIDATION", "Some of the information sent was invalid.");
   const args = spec.args.map((schema, i) => {
     // JSON has no `undefined` — a null argument means "not given".

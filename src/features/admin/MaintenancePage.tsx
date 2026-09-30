@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CalendarPlus, Wrench } from "lucide-react";
 import { api, type MaintenanceView } from "@/api";
@@ -14,6 +14,7 @@ import { toast } from "@/components/ui/Toast";
 import { AdminHeader } from "@/layouts/AdminLayout";
 import { TableShell, td, th, useUrlFilters } from "./shared";
 import { L, N, arCount, t } from "@/i18n";
+import { facilityName } from "@/domain/localize";
 
 const STATE: Record<MaintenanceView["state"], { label: string; tone: Tone }> = {
   active: { get label() {
@@ -33,10 +34,12 @@ const KIND: Record<MaintenanceView["kind"], () => string> = { planned: () => t("
 const REASONS = () => [t("Surface resurfacing"), t("Deep cleaning"), t("Equipment servicing"), t("University event"), t("Electrical work")];
 
 const local = (d: Date) => format(d, "yyyy-MM-dd'T'HH:mm");
-const windowLabel = (start: string, end: string) => (fmtDayShort(start) === fmtDayShort(end) ? `${fmtDayShort(start)}, ${fmtRange(start, end)}` : `${fmtDayShort(start)} ${format(new Date(start), "HH:mm")} – ${fmtDayShort(end)} ${format(new Date(end), "HH:mm")}`);
+const windowLabel = (start: string, end: string) => (fmtDayShort(start) === fmtDayShort(end) ? `${fmtDayShort(start)}${L(", ", "، ")}${fmtRange(start, end)}` : `${fmtDayShort(start)} ${format(new Date(start), "HH:mm")} – ${fmtDayShort(end)} ${format(new Date(end), "HH:mm")}`);
 
 function ScheduleDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const facilities = useAdminFacilities();
+  // Archived facilities can’t be scheduled.
+  const live = useMemo(() => (facilities.data ?? []).filter((f) => !f.facility.archived), [facilities.data]);
   const [facilityId, setFacilityId] = useState("");
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
@@ -51,8 +54,8 @@ function ScheduleDialog({ open, onClose }: { open: boolean; onClose: () => void 
     setReason("");
   }, [open]);
   useEffect(() => {
-    if (open && !facilityId && facilities.data?.length) setFacilityId(facilities.data[0].facility.id);
-  }, [open, facilityId, facilities.data]);
+    if (open && !facilityId && live.length) setFacilityId(live[0].facility.id);
+  }, [open, facilityId, live]);
 
   const valid = !!facilityId && !!start && !!end && new Date(end) > new Date(start);
   const key = useDebounced(`${facilityId}|${start}|${end}`, 300);
@@ -94,14 +97,14 @@ function ScheduleDialog({ open, onClose }: { open: boolean; onClose: () => void 
       <div className="space-y-4">
         <Field label={t("Facility")} htmlFor="mt-facility">
           <Select id="mt-facility" value={facilityId} onChange={(e) => setFacilityId(e.target.value)}>
-            {(facilities.data ?? []).map((f) => (
+            {live.map((f) => (
               <option key={f.facility.id} value={f.facility.id}>
-                {f.facility.name}
+                {facilityName(f.facility)}
               </option>
             ))}
           </Select>
         </Field>
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label={t("Starts")} htmlFor="mt-start">
             <Input id="mt-start" type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} />
           </Field>

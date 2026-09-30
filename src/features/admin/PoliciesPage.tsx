@@ -59,6 +59,7 @@ function unitFor(v: number, unit?: string): string | undefined {
 
 function display(field: PolicyField, v: unknown): string {
   if (field.type === "boolean") return v ? t("On") : t("Off");
+  if (field.unit === ":00") return `${String(v).padStart(2, "0")}:00`;
   if (field.type === "select") return t(field.options?.find((o) => o.value === v)?.label ?? String(v));
   if (typeof v === "number" && field.unit?.startsWith("min")) {
     const suffix = field.unit.replace("min", "").trim();
@@ -342,12 +343,12 @@ export default function PoliciesPage() {
       <AdminHeader title={t("Booking policies")} description={t("Rules resolve from campus defaults, to a facility type, to a single facility — each level only overrides what it changes. Nothing is hard-coded in the booking engine.")} />
 
       {!d || !draft || !effective || draftKey !== scopeKey ? (
-        <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
           <Skeleton className="hidden h-96 rounded-[20px] lg:block" />
           <Skeleton className="h-[600px] rounded-[20px]" />
         </div>
       ) : (
-        <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
           <nav aria-label={t("Policy scope")} className="lg:sticky lg:top-24 lg:self-start">
             <div className="lg:hidden">
               <Select aria-label={t("Policy scope")} value={`${level === "global" ? "global" : level}:${level === "global" ? "" : scopeId}`} onChange={(e) => {

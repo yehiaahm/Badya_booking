@@ -48,8 +48,10 @@ export function BookingSheet({ open, onClose, facility, start, end, mode }: { op
   const nav = useNavigate();
   const qc = useQueryClient();
   const now = useNow(1000);
-  const needsPeople = policy.participants.required && f.mode === "exclusive";
-  const maxPeople = Math.min(policy.participants.max, f.capacity);
+  const maxPeople = f.mode === "exclusive" ? Math.max(1, Math.min(policy.participants.max, f.capacity)) : 1;
+  const minPeople = policy.participants.required && f.mode === "exclusive" ? Math.min(policy.participants.min, maxPeople) : 1;
+  // Anyone can be invited where the facility takes more than one person; some facilities need a minimum.
+  const needsPeople = maxPeople > 1;
   const [people, setPeople] = useState<PublicUser[]>([]);
   const [term, setTerm] = useState("");
   const [purpose, setPurpose] = useState("");
@@ -150,7 +152,7 @@ export function BookingSheet({ open, onClose, facility, start, end, mode }: { op
             </Button>
           ) : (
             <Button size="lg" block disabled={!canConfirm || serverError !== null} loading={submit.isPending} success={done} onClick={() => submit.mutate()}>
-              {mode.kind === "claim" ? tr("Claim spot") : approval ? tr("Send request") : tr("Confirm booking")}
+              {mode.kind === "claim" ? tr("Claim spot") : minPeople > 1 ? tr("Book & send invitations") : approval ? tr("Send request") : tr("Confirm booking")}
             </Button>
           )}
           {serverError && (
@@ -193,10 +195,10 @@ export function BookingSheet({ open, onClose, facility, start, end, mode }: { op
                 {tr("Who’s playing?")}
               </h3>
               <span className={cn("text-xs font-semibold tabular", countIssue ? "text-warning" : "text-success")}>
-                {1 + people.length}{" "}{tr("of")}{" "}{policy.participants.min}–{maxPeople}
+                {1 + people.length}{" "}{tr("of")}{" "}{minPeople}–{maxPeople}
               </span>
             </div>
-            <p className="mb-3 text-xs leading-relaxed text-muted">{tr("List everyone by name or university ID. Everyone listed follows the same fair-use limits and gets a notification.")}</p>
+            <p className="mb-3 text-xs leading-relaxed text-muted">{minPeople > 1 ? tr("Invite everyone by name or university ID. Each player accepts from their own phone — only then does it count towards their limits, and the booking is confirmed once enough have accepted.") : tr("Playing with friends? Invite them by name or university ID — each accepts from their own phone.")}</p>
             <div className="flex flex-wrap gap-1.5">
               <span className="inline-flex h-8 items-center gap-1.5 rounded-full bg-brand-soft ps-1 pe-3 text-xs font-semibold text-brand-strong">
                 <Avatar name={me.name} hue={me.avatarHue} size={24} />{" "}{tr("You")}
@@ -244,7 +246,7 @@ export function BookingSheet({ open, onClose, facility, start, end, mode }: { op
                     onClick={() =>
                       setPeople((cur) => {
                         const room = maxPeople - 1 - cur.length;
-                        const needed = Math.max(0, policy.participants.min - 1 - cur.length);
+                        const needed = Math.max(0, minPeople - 1 - cur.length);
                         const take = Math.min(room, Math.max(needed, 0) || room);
                         return [...cur, ...suggestions.slice(0, take).map((s) => s.user)];
                       })

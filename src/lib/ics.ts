@@ -16,7 +16,7 @@ function event(b: BookingView, now: string): string[] {
     `SUMMARY:${esc(b.facility.name)}`,
     `LOCATION:${esc(where)}`,
     `DESCRIPTION:${esc(t("Booking {id}. Show your QR code in Badya Spaces to check in.", { id: b.id }))}`,
-    ...(b.status === "PENDING" ? ["STATUS:TENTATIVE"] : ["STATUS:CONFIRMED"]),
+    ...(b.status === "PENDING" || b.status === "AWAITING_PLAYERS" ? ["STATUS:TENTATIVE"] : ["STATUS:CONFIRMED"]),
     "BEGIN:VALARM",
     "TRIGGER:-PT30M",
     "ACTION:DISPLAY",

@@ -3,7 +3,7 @@ import type { BookingPolicy, Facility, FacilityCategory, Role, SystemSettings, W
 /* ───────────────────────── Global policy ───────────────────────── */
 
 export const GLOBAL_POLICY: BookingPolicy = {
-  window: { advanceDays: 7, minLeadMinutes: 15 },
+  window: { advanceDays: 7, minLeadMinutes: 15, releaseHour: 9 },
   limits: { perDay: 2, perWeek: 6, maxActive: 3 },
   fairness: {
     scope: "facility",
@@ -12,7 +12,7 @@ export const GLOBAL_POLICY: BookingPolicy = {
     applyToParticipants: true,
     linkedGroups: { enabled: false, lookbackDays: 30, minSharedSessions: 3, action: "block" },
   },
-  participants: { required: false, min: 1, max: 20 },
+  participants: { required: false, min: 1, max: 20, acceptMinutes: 60 },
   cancellation: { freeUntilMinutes: 120, lateCountsAsStrike: false },
   checkIn: { opensMinutesBefore: 15, graceMinutes: 15, autoNoShow: true },
   noShow: {
@@ -151,8 +151,44 @@ const CREATED = "2026-06-01T09:00:00.000Z";
 const ALL_STUDENTS: Facility["access"] = { audiences: ["undergraduate", "postgraduate"], faculties: null, minYear: null };
 const SPORTS = { building: "Sports Courts", buildingAr: "الملاعب الرياضية" };
 const ACTIVITY = { building: "Activity Center", buildingAr: "الأكتيفيتي سنتر" };
+/** Every court and table is open 09:00–15:00, in 30-minute sessions (the last one starts at 14:30). */
+export const OPEN = "09:00";
+export const CLOSE = "15:00";
+export const SESSION_MINUTES = 30;
 /** Activity Center hours — closed on Fridays. */
-const ACTIVITY_HOURS = weekdays("10:00", "20:00", null, ["10:00", "20:00"]);
+const ACTIVITY_HOURS = weekdays(OPEN, CLOSE, null, [OPEN, CLOSE]);
+const SPORTS_HOURS = daily(OPEN, CLOSE);
+
+const OLD_SPORTS_HOURS = daily("08:00", "22:00");
+const OLD_ACTIVITY_HOURS = weekdays("10:00", "20:00", null, ["10:00", "20:00"]);
+
+/**
+ * Values earlier versions of the catalogue shipped with, by facility and field
+ * path. When the server starts, a facility still holding one of these gets
+ * today's value; anything an administrator has changed is left alone.
+ */
+export const RETIRED_DEFAULTS: Record<string, Record<string, unknown>> = {
+  f_tennis: { schedule: OLD_SPORTS_HOURS, sessionMinutes: 60, amenities: ["floodlights", "water", "seating"], shortDescription: "Floodlit hard court for singles or doubles.", "ar.shortDescription": "ملعب تنس بإضاءة ليلية للفردي أو الزوجي." },
+  f_padel: {
+    schedule: OLD_SPORTS_HOURS,
+    sessionMinutes: 90,
+    amenities: ["floodlights", "water"],
+    description: "Two glass-walled padel courts. Each booking reserves one court; the court number appears on your ticket. Sessions are 90 minutes.",
+    "ar.description": "ملعبين بادل بحوائط زجاج. كل حجز بياخد ملعب واحد، ورقم الملعب بيظهر في التذكرة. مدة الحجز 90 دقيقة.",
+  },
+  f_football: { schedule: OLD_SPORTS_HOURS, sessionMinutes: 60, amenities: ["floodlights", "water", "seating"], shortDescription: "Floodlit pitch — list 6 to 14 players.", "ar.shortDescription": "ملعب بإضاءة ليلية — من 6 لـ 14 لاعب." },
+  f_volleyball: { schedule: OLD_SPORTS_HOURS, sessionMinutes: 60, amenities: ["floodlights", "water"] },
+  f_pingpong: { schedule: OLD_ACTIVITY_HOURS },
+  f_billiards: { schedule: OLD_ACTIVITY_HOURS, sessionMinutes: 45, shortDescription: "One table, 45-minute sessions.", "ar.shortDescription": "ترابيزة واحدة، مدة الحجز 45 دقيقة." },
+  f_airhockey: {
+    schedule: OLD_ACTIVITY_HOURS,
+    sessionMinutes: 20,
+    shortDescription: "One table, quick 20-minute games.",
+    description: "The air hockey table in the Activity Center — quick 20-minute sessions for two players.",
+    "ar.shortDescription": "ترابيزة واحدة، ماتشات سريعة 20 دقيقة.",
+    "ar.description": "ترابيزة الإير هوكي في الأكتيفيتي سنتر — حجز سريع 20 دقيقة للاعبين اتنين.",
+  },
+};
 
 export const FACILITIES: Facility[] = [
   {
@@ -160,7 +196,7 @@ export const FACILITIES: Facility[] = [
     name: "Tennis Court",
     nameAr: "ملعب التنس",
     categoryId: "cat_racket",
-    shortDescription: "Floodlit hard court for singles or doubles.",
+    shortDescription: "Hard court for singles or doubles.",
     description: "The university tennis court. Book for singles or doubles and list the university IDs of everyone playing.",
     location: { building: SPORTS.building, area: "Tennis court", mapX: 81, mapY: 38 },
     media: { motif: "tennis", accent: "#3F7FA6" },
@@ -168,10 +204,10 @@ export const FACILITIES: Facility[] = [
     units: 1,
     unitLabel: "court",
     capacity: 4,
-    sessionMinutes: 60,
+    sessionMinutes: SESSION_MINUTES,
     turnoverMinutes: 0,
-    schedule: daily("08:00", "22:00"),
-    amenities: ["floodlights", "water", "seating"],
+    schedule: SPORTS_HOURS,
+    amenities: ["seating"],
     rules: ["Tennis shoes only.", "Singles or doubles — up to 4 players.", "Please collect all balls before you leave."],
     policy: {},
     access: ALL_STUDENTS,
@@ -179,7 +215,7 @@ export const FACILITIES: Facility[] = [
     createdAt: CREATED,
     updatedAt: CREATED,
     ar: {
-      shortDescription: "ملعب تنس بإضاءة ليلية للفردي أو الزوجي.",
+      shortDescription: "ملعب تنس للفردي أو الزوجي.",
       description: "ملعب التنس في الجامعة. احجز للفردي أو الزوجي واكتب الأرقام الجامعية لكل اللاعبين.",
       rules: ["حذاء تنس فقط.", "فردي أو زوجي — حتى 4 لاعبين.", "برجاء جمع كل الكور قبل ما تمشي."],
       unitLabel: "ملعب",
@@ -193,17 +229,17 @@ export const FACILITIES: Facility[] = [
     nameAr: "ملاعب البادل",
     categoryId: "cat_racket",
     shortDescription: "Two padel courts — you get one when you book.",
-    description: "Two glass-walled padel courts. Each booking reserves one court; the court number appears on your ticket. Sessions are 90 minutes.",
+    description: "Two glass-walled padel courts. Each booking reserves one court; the court number appears on your ticket. Sessions are 30 minutes.",
     location: { building: SPORTS.building, area: "Padel courts", mapX: 77, mapY: 47 },
     media: { motif: "padel", accent: "#2F8C84" },
     mode: "exclusive",
     units: 2,
     unitLabel: "court",
     capacity: 4,
-    sessionMinutes: 90,
+    sessionMinutes: SESSION_MINUTES,
     turnoverMinutes: 0,
-    schedule: daily("08:00", "22:00"),
-    amenities: ["floodlights", "water"],
+    schedule: SPORTS_HOURS,
+    amenities: [],
     rules: ["Doubles: up to 4 players.", "No hanging on the glass walls."],
     policy: {},
     access: ALL_STUDENTS,
@@ -212,7 +248,7 @@ export const FACILITIES: Facility[] = [
     updatedAt: CREATED,
     ar: {
       shortDescription: "ملعبين بادل — بيتحدد لك ملعب وقت الحجز.",
-      description: "ملعبين بادل بحوائط زجاج. كل حجز بياخد ملعب واحد، ورقم الملعب بيظهر في التذكرة. مدة الحجز 90 دقيقة.",
+      description: "ملعبين بادل بحوائط زجاج. كل حجز بياخد ملعب واحد، ورقم الملعب بيظهر في التذكرة. مدة الحجز 30 دقيقة.",
       rules: ["زوجي: حتى 4 لاعبين.", "ممنوع التعلّق على الحوائط الزجاج."],
       unitLabel: "ملعب",
       building: SPORTS.buildingAr,
@@ -224,7 +260,7 @@ export const FACILITIES: Facility[] = [
     name: "Football Pitch",
     nameAr: "ملعب كرة القدم",
     categoryId: "cat_team",
-    shortDescription: "Floodlit pitch — list 6 to 14 players.",
+    shortDescription: "Football pitch — list 6 to 14 players.",
     description: "The university football pitch. List the university IDs of 6 to 14 players; everyone listed follows the same booking limits.",
     location: { building: SPORTS.building, area: "Football pitch", mapX: 72, mapY: 30 },
     media: { motif: "football", accent: "#2F7A4F" },
@@ -232,10 +268,10 @@ export const FACILITIES: Facility[] = [
     units: 1,
     unitLabel: "pitch",
     capacity: 14,
-    sessionMinutes: 60,
+    sessionMinutes: SESSION_MINUTES,
     turnoverMinutes: 0,
-    schedule: daily("08:00", "22:00"),
-    amenities: ["floodlights", "water", "seating"],
+    schedule: SPORTS_HOURS,
+    amenities: ["seating"],
     rules: ["Football boots or turf shoes only.", "Bring your own ball.", "Leave the pitch on time for the next group."],
     policy: {},
     access: ALL_STUDENTS,
@@ -243,7 +279,7 @@ export const FACILITIES: Facility[] = [
     createdAt: CREATED,
     updatedAt: CREATED,
     ar: {
-      shortDescription: "ملعب بإضاءة ليلية — من 6 لـ 14 لاعب.",
+      shortDescription: "ملعب كرة قدم — من 6 لـ 14 لاعب.",
       description: "ملعب كرة القدم في الجامعة. اكتب الأرقام الجامعية لـ 6 إلى 14 لاعب، وكل اللي في القائمة بتنطبق عليهم نفس حدود الحجز.",
       rules: ["جزمة كورة أو حذاء نجيل صناعي فقط.", "هات الكورة بتاعتك.", "اخرج من الملعب في ميعادك عشان المجموعة اللي بعدك."],
       unitLabel: "ملعب",
@@ -264,10 +300,10 @@ export const FACILITIES: Facility[] = [
     units: 1,
     unitLabel: "court",
     capacity: 12,
-    sessionMinutes: 60,
+    sessionMinutes: SESSION_MINUTES,
     turnoverMinutes: 0,
-    schedule: daily("08:00", "22:00"),
-    amenities: ["floodlights", "water"],
+    schedule: SPORTS_HOURS,
+    amenities: [],
     rules: ["Sports shoes only.", "Up to 12 players."],
     policy: { participants: { min: 6, max: 12 } },
     access: ALL_STUDENTS,
@@ -296,7 +332,7 @@ export const FACILITIES: Facility[] = [
     units: 2,
     unitLabel: "table",
     capacity: 4,
-    sessionMinutes: 30,
+    sessionMinutes: SESSION_MINUTES,
     turnoverMinutes: 0,
     schedule: ACTIVITY_HOURS,
     amenities: ["ac", "equipment", "seating"],
@@ -319,7 +355,7 @@ export const FACILITIES: Facility[] = [
     name: "Billiards Table",
     nameAr: "ترابيزة البلياردو",
     categoryId: "cat_activity",
-    shortDescription: "One table, 45-minute sessions.",
+    shortDescription: "One table, 30-minute sessions.",
     description: "The billiards table in the Activity Center. Cues and balls are available at the desk.",
     location: { building: ACTIVITY.building, mapX: 49, mapY: 53 },
     media: { motif: "billiards", accent: "#2F6B4A" },
@@ -327,7 +363,7 @@ export const FACILITIES: Facility[] = [
     units: 1,
     unitLabel: "table",
     capacity: 4,
-    sessionMinutes: 45,
+    sessionMinutes: SESSION_MINUTES,
     turnoverMinutes: 0,
     schedule: ACTIVITY_HOURS,
     amenities: ["ac", "equipment", "seating"],
@@ -338,7 +374,7 @@ export const FACILITIES: Facility[] = [
     createdAt: CREATED,
     updatedAt: CREATED,
     ar: {
-      shortDescription: "ترابيزة واحدة، مدة الحجز 45 دقيقة.",
+      shortDescription: "ترابيزة واحدة، مدة الحجز 30 دقيقة.",
       description: "ترابيزة البلياردو في الأكتيفيتي سنتر. العصيان والكور موجودة عند المكتب.",
       rules: ["حتى 4 لاعبين.", "ممنوع القعدة على الترابيزة.", "رجّع العصيان مكانها."],
       unitLabel: "ترابيزة",
@@ -350,15 +386,15 @@ export const FACILITIES: Facility[] = [
     name: "Air Hockey Table",
     nameAr: "ترابيزة الإير هوكي",
     categoryId: "cat_activity",
-    shortDescription: "One table, quick 20-minute games.",
-    description: "The air hockey table in the Activity Center — quick 20-minute sessions for two players.",
+    shortDescription: "One table, 30-minute sessions.",
+    description: "The air hockey table in the Activity Center — 30-minute sessions for two players.",
     location: { building: ACTIVITY.building, mapX: 45, mapY: 59 },
     media: { motif: "airhockey", accent: "#B23A48" },
     mode: "exclusive",
     units: 1,
     unitLabel: "table",
     capacity: 2,
-    sessionMinutes: 20,
+    sessionMinutes: SESSION_MINUTES,
     turnoverMinutes: 0,
     schedule: ACTIVITY_HOURS,
     amenities: ["ac", "seating"],
@@ -369,8 +405,8 @@ export const FACILITIES: Facility[] = [
     createdAt: CREATED,
     updatedAt: CREATED,
     ar: {
-      shortDescription: "ترابيزة واحدة، ماتشات سريعة 20 دقيقة.",
-      description: "ترابيزة الإير هوكي في الأكتيفيتي سنتر — حجز سريع 20 دقيقة للاعبين اتنين.",
+      shortDescription: "ترابيزة واحدة، مدة الحجز 30 دقيقة.",
+      description: "ترابيزة الإير هوكي في الأكتيفيتي سنتر — حجز 30 دقيقة للاعبين اتنين.",
       rules: ["لاعبين اتنين.", "خلّي البَك والمضارب على الترابيزة."],
       unitLabel: "ترابيزة",
       building: ACTIVITY.buildingAr,

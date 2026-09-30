@@ -5,13 +5,14 @@ import { tick } from "./api/core";
 import { db } from "./api/db";
 import { createApp } from "./app";
 import { dailyBackup } from "./backup";
-import { ensureAdmin, freshState } from "./setup";
+import { ensureAdmin, freshState, migrate } from "./setup";
 
 db.open(config.dbFile);
 if (db.isEmpty) {
   db.replaceAll(freshState());
   console.log("[setup] Created a new database with the university's facilities.");
 }
+await runAsSystem(() => migrate());
 await runAsSystem(() => ensureAdmin());
 
 // Time-based work: reminders, no-shows, completions, expired offers.

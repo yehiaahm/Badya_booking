@@ -13,8 +13,9 @@ import { useSession, useTheme, type ThemePref } from "@/state/session";
 import { chooseLanguage, useLanguage } from "@/i18n/store";
 import { useCanSignOut, useSignOut } from "@/components/shell/UserMenu";
 import { ChangePasswordDialog } from "@/components/shell/ChangePasswordDialog";
+import { PushCard } from "@/components/shell/PushCard";
 import { Button } from "@/components/ui/Button";
-import { Select, Switch } from "@/components/ui/Form";
+import { Select } from "@/components/ui/Form";
 import { Avatar, Card, ErrorState, ProgressBar, Skeleton } from "@/components/ui/Primitives";
 import { toast } from "@/components/ui/Toast";
 import { PageHeader } from "@/layouts/StudentLayout";
@@ -233,8 +234,7 @@ function Preferences() {
             </Select>
           </div>
         </div>
-        <Switch checked={prefs.waitlistAlerts} disabled={save.isPending} onChange={(v) => save.mutate({ waitlistAlerts: v })} label={tr("Waitlist alerts")} description={tr("Tell me the moment a spot opens — offers are held for a few minutes only.")} />
-        <Switch checked={prefs.emailDigest} disabled={save.isPending} onChange={(v) => save.mutate({ emailDigest: v })} label={tr("Weekly email summary")} description={tr("A round-up of your week’s bookings, sent to {email}.", { email: user.email })} />
+        {/* Waitlist offers are always sent (a hidden offer would just expire), and there is no email — so no switches for either. */}
         <div className="border-t border-line pt-5">
           <p className="mb-2 text-sm font-semibold text-ink">{tr("Language")}</p>
           <div className="inline-flex rounded-xl bg-surface-2 p-1" role="radiogroup" aria-label={tr("Language")}>
@@ -276,7 +276,7 @@ export function ProfilePage() {
   return (
     <div>
       <PageHeader title={tr("Profile")} />
-      <div className="grid gap-6 px-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      <div className="grid grid-cols-1 gap-6 px-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <div className="space-y-6">
           <Card className="flex items-center gap-4 p-5">
             <Avatar name={user.name} hue={user.avatarHue} size={64} ring />
@@ -307,7 +307,7 @@ export function ProfilePage() {
             ) : teammates.data.length === 0 ? (
               <p className="mt-4 rounded-2xl bg-surface-2/70 p-4 text-sm text-muted">{tr("Nobody yet. When you add people to a booking, they’ll show up here.")}</p>
             ) : (
-              <ul className="mt-4 grid gap-2 sm:grid-cols-2">
+              <ul className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {teammates.data.map(({ user: p, shared }) => (
                   <li key={p.id} className="flex items-center gap-3 rounded-2xl bg-surface-2/60 p-2.5">
                     <Avatar name={p.name} hue={p.avatarHue} size={34} />
@@ -322,6 +322,8 @@ export function ProfilePage() {
               </ul>
             )}
           </Card>
+
+          <PushCard />
 
           <Card className="p-5">
             <h2 className="text-base font-bold text-ink">{tr("Account")}</h2>

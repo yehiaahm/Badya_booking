@@ -14,7 +14,7 @@ import { Dialog } from "@/components/ui/Overlay";
 import { toast } from "@/components/ui/Toast";
 import { AdminHeader } from "@/layouts/AdminLayout";
 import { Kpi, useUrlFilters } from "./shared";
-import { t } from "@/i18n";
+import { L, t } from "@/i18n";
 
 type Entry = WaitlistSessionView["entries"][number];
 
@@ -34,7 +34,7 @@ function SessionCard({ s, onRemove }: { s: WaitlistSessionView; onRemove: (e: En
           <div className="min-w-0">
             <h3 className="truncate text-[15px] font-bold text-ink">{s.facility.name}</h3>
             <p className="text-sm text-ink-2 tabular">
-              {relDay(s.start, now)}, {fmtRange(s.start, s.end)}
+              {relDay(s.start, now)}{L(", ", "، ")}{fmtRange(s.start, s.end)}
             </p>
           </div>
         </div>
@@ -138,7 +138,7 @@ export default function WaitlistsPage() {
       )}
 
       {!q.data ? (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {Array.from({ length: 4 }, (_, i) => (
             <Skeleton key={i} className="h-48 rounded-[20px]" />
           ))}
@@ -155,7 +155,7 @@ export default function WaitlistsPage() {
                   {relDay(items[0].start, now)}
                   {relDay(items[0].start, now) !== fmtDayShort(items[0].start) && <span className="ms-1.5 font-semibold normal-case tracking-normal">· {fmtDayShort(items[0].start)}</span>}
                 </h2>
-                <div className="grid gap-4 lg:grid-cols-2">
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                   {items.map((s) => (
                     <SessionCard key={`${s.facility.id}-${s.start}`} s={s} onRemove={(e, ss) => setRemoving({ e, s: ss })} />
                   ))}
@@ -171,7 +171,7 @@ export default function WaitlistsPage() {
         onClose={() => setRemoving(null)}
         size="sm"
         title={t("Remove {v}?", { v: removing?.e.user.name ?? "" })}
-        description={removing ? `${removing.s.facility.name} · ${fmtDayShort(removing.s.start)}, ${fmtRange(removing.s.start, removing.s.end)}` : undefined}
+        description={removing ? `${removing.s.facility.name} · ${fmtDayShort(removing.s.start)}${L(", ", "، ")}${fmtRange(removing.s.start, removing.s.end)}` : undefined}
         footer={
           <>
             <Button variant="ghost" onClick={() => setRemoving(null)}>

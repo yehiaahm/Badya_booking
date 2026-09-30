@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { motion } from "motion/react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, CalendarPlus, Check, Clock, Info, MapPin, QrCode as QrIcon, Users } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CalendarPlus, Check, Clock, Info, MapPin, QrCode as QrIcon, UserPlus, X } from "lucide-react";
 import { api, ApiError } from "@/api";
 import { cn } from "@/lib/cn";
 import { useNow } from "@/lib/hooks";
@@ -13,11 +13,13 @@ import { POLICY_ICONS } from "@/components/icons";
 import { FacilityArt } from "@/components/facility/FacilityArt";
 import { BOOKING_STATUS, StatusBadge } from "@/components/booking/status";
 import { LiveQr } from "@/components/booking/Ticket";
+import { TeamCard } from "@/components/booking/Team";
+import { useRespond } from "@/components/booking/Invitations";
 import { Button, IconButton } from "@/components/ui/Button";
-import { Avatar, Card, ErrorState, Skeleton } from "@/components/ui/Primitives";
+import { Card, ErrorState, Skeleton } from "@/components/ui/Primitives";
 import { Dialog } from "@/components/ui/Overlay";
 import { toast } from "@/components/ui/Toast";
-import { L, arCount, t, tStored } from "@/i18n";
+import { L, arCount, t } from "@/i18n";
 
 const REASONS = () => [t("Plans changed"), t("Class or exam clash"), t("Not feeling well"), t("Teammates can’t make it"), t("Booked by mistake")];
 
@@ -29,6 +31,7 @@ export function BookingDetailPage() {
   const now = useNow(1000);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
+  const respond = useRespond(id);
   const leave = useMutation({
     mutationFn: () => api.bookings.leave(id),
     onSuccess: () => {
@@ -78,7 +81,34 @@ export function BookingDetailPage() {
         <p className="font-mono text-xs font-semibold text-muted">{b.id}</p>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
+      {b.relation === "invited" && start > now && (
+        <div className="mb-5 flex flex-wrap items-center gap-3 rounded-[22px] border border-brand/30 bg-brand-softer p-4">
+          <UserPlus className="size-5 shrink-0 text-brand" />
+          <p className="min-w-0 flex-1 text-sm text-ink-2">
+            <span className="font-bold text-ink">{t("{name} invited you to play.", { name: b.booker.name })}</span>{" "}
+            {t("Accept to join — it then counts towards your own limits. If you can’t make it, decline so they can invite someone else.")}
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="ghost" icon={<X className="size-4" />} disabled={respond.isPending} loading={respond.isPending && respond.variables === "decline"} onClick={() => respond.mutate("decline")}>
+              {t("Decline")}
+            </Button>
+            <Button size="sm" icon={<Check className="size-4" />} disabled={respond.isPending} loading={respond.isPending && respond.variables === "accept"} onClick={() => respond.mutate("accept")}>
+              {t("Accept")}
+            </Button>
+          </div>
+        </div>
+      )}
+      {b.status === "AWAITING_PLAYERS" && b.playersDeadline && (
+        <div className="mb-5 flex gap-3 rounded-[22px] border border-warning/30 bg-warning-soft p-4 text-sm">
+          <Clock className="mt-0.5 size-5 shrink-0 text-warning" />
+          <p className="text-ink-2">
+            <span className="font-bold text-ink">{t("Acceptances still needed: {n} — until {time}.", { n: b.playersNeeded, time: format(new Date(b.playersDeadline), "EEE HH:mm") })}</span>{" "}
+            {t("The session is held for you until then. If too few accept, the booking is cancelled without a strike and the session reopens for others.")}
+          </p>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
         <div className="space-y-6">
           <Card className="overflow-hidden">
             <div className="relative">
@@ -95,7 +125,7 @@ export function BookingDetailPage() {
                 {b.relation === "participant" && <span className="text-xs text-muted">{t("You’re a participant — booked by")}{" "}{b.booker.name}</span>}
               </div>
               <p className="mt-3 text-sm text-muted">{meta.description}</p>
-              <dl className="mt-5 grid gap-4 sm:grid-cols-2">
+              <dl className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="flex gap-3">
                   <Clock className="mt-0.5 size-5 text-muted" />
                   <div>
@@ -129,24 +159,7 @@ export function BookingDetailPage() {
             </div>
           </Card>
 
-          {b.people.length > 0 && (
-            <Card className="p-5">
-              <h2 className="flex items-center gap-2 text-base font-bold text-ink">
-                <Users className="size-4 text-muted" /> {b.people.length + 1}{" "}{t("people on this booking")}
-              </h2>
-              <ul className="mt-3 grid gap-2 sm:grid-cols-2">
-                {[b.booker, ...b.people].map((p, i) => (
-                  <li key={p.id} className="flex items-center gap-3 rounded-2xl bg-surface-2/60 p-2.5">
-                    <Avatar name={p.name} hue={p.avatarHue} size={34} />
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-semibold text-ink">{p.name}</span>
-                      <span className="block text-xs text-muted">{i === 0 ? t("Booked by") : tStored(p.faculty)}</span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </Card>
-          )}
+          <TeamCard b={b} />
 
           <Card className="p-5">
             <h2 className="text-base font-bold text-ink">{t("Timeline")}</h2>
@@ -201,10 +214,15 @@ export function BookingDetailPage() {
               <p className="text-sm font-bold text-ink">{t("Waiting for approval")}</p>
               <p className="mt-1 text-sm text-muted">{t("Your QR code will appear here once staff approve the request.")}</p>
             </Card>
+          ) : b.status === "AWAITING_PLAYERS" && b.relation === "booker" ? (
+            <Card className="p-5">
+              <p className="text-sm font-bold text-ink">{t("Waiting for your players")}</p>
+              <p className="mt-1 text-sm text-muted">{t("Your QR code will appear here once enough players accept.")}</p>
+            </Card>
           ) : null}
 
           <Card className="space-y-2 p-4">
-            {(b.status === "CONFIRMED" || b.status === "PENDING") && (
+            {(b.status === "CONFIRMED" || b.status === "PENDING" || b.status === "AWAITING_PLAYERS") && b.relation !== "invited" && (
               <Button variant="secondary" block icon={<CalendarPlus className="size-4" />} onClick={() => downloadIcs(b)}>
                 {t("Add to calendar")}
               </Button>
@@ -214,7 +232,7 @@ export function BookingDetailPage() {
                 {t("Cancel booking")}
               </Button>
             )}
-            {b.relation === "participant" && (b.status === "CONFIRMED" || b.status === "PENDING") && start > now && (
+            {b.relation === "participant" && (b.status === "CONFIRMED" || b.status === "PENDING" || b.status === "AWAITING_PLAYERS") && start > now && (
               <Button variant="danger-soft" block onClick={() => setLeaveOpen(true)}>
                 {t("Remove me from this booking")}
               </Button>
@@ -236,7 +254,7 @@ export function BookingDetailPage() {
         open={cancelOpen}
         onClose={() => setCancelOpen(false)}
         title={t("Cancel this booking?")}
-        description={`${f.name} · ${fmtDayLong(b.start)}, ${fmtRange(b.start, b.end)}`}
+        description={`${f.name} · ${fmtDayLong(b.start)}${L(", ", "، ")}${fmtRange(b.start, b.end)}`}
         size="sm"
         footer={
           <>
@@ -284,7 +302,7 @@ export function BookingDetailPage() {
         onClose={() => setLeaveOpen(false)}
         size="sm"
         title={t("Remove yourself from this booking?")}
-        description={t("{name} made this booking and listed you. If you won’t be playing, leave it so it doesn’t count towards your own limits.", { name: b.booker.name })}
+        description={t("It will stop counting towards your limits. If that leaves {name} short of players, the booking goes back on hold until they invite someone else — or it’s cancelled.", { name: b.booker.name })}
         footer={
           <>
             <Button variant="ghost" onClick={() => setLeaveOpen(false)}>

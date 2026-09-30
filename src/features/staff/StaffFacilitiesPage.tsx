@@ -39,7 +39,7 @@ export function StaffFacilitiesPage() {
       <p className="mt-2 text-sm text-muted">{q.data ? t("{n} you look after · {issues} open", { n: q.data.facilities.length, issues: N.issue(issues) }) : " "}</p>
 
       {!q.data ? (
-        <div className="mt-6 grid gap-4 md:grid-cols-2">
+        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
           {Array.from({ length: 4 }, (_, i) => (
             <Skeleton key={i} className="h-72 rounded-[22px]" />
           ))}
@@ -47,7 +47,7 @@ export function StaffFacilitiesPage() {
       ) : q.data.facilities.length === 0 ? (
         <EmptyState icon={Building2} title={t("No facilities assigned to you")} body={t("Ask the facilities office to assign you to the spaces you supervise.")} className="mt-10" />
       ) : (
-        <div className="mt-6 grid gap-4 md:grid-cols-2">
+        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
           {q.data.facilities.map((f, i) => {
             const st = statusOf(f, now);
             return (

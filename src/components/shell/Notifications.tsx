@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { AnimatePresence, motion } from "motion/react";
 import { useMutation } from "@tanstack/react-query";
-import { Bell, BellOff, CalendarCheck, CalendarX, CheckCircle2, Clock, Hourglass, ListOrdered, Megaphone, ShieldAlert, Smartphone, Sparkles, UserPlus, UserX, Wrench, type LucideIcon } from "lucide-react";
+import { Bell, BellOff, CalendarCheck, CalendarX, CheckCircle2, Clock, Hourglass, ListOrdered, Megaphone, ShieldAlert, Smartphone, Sparkles, UserPlus, Users, UserX, Wrench, type LucideIcon } from "lucide-react";
 import { api, type AppNotification } from "@/api";
 import type { NotificationType } from "@/domain/types";
 import { cn } from "@/lib/cn";
@@ -21,6 +21,8 @@ const META: Record<NotificationType, { icon: LucideIcon; tone: string }> = {
   booking_reminder: { icon: Clock, tone: "bg-info-soft text-info" },
   booking_cancelled: { icon: CalendarX, tone: "bg-surface-2 text-muted" },
   participant_added: { icon: UserPlus, tone: "bg-brand-soft text-brand" },
+  invitation: { icon: UserPlus, tone: "bg-brand text-on-brand" },
+  invitation_response: { icon: Users, tone: "bg-brand-soft text-brand" },
   waitlist_joined: { icon: ListOrdered, tone: "bg-violet-soft text-violet" },
   slot_available: { icon: Sparkles, tone: "bg-brand text-on-brand" },
   waitlist_expired: { icon: ListOrdered, tone: "bg-surface-2 text-muted" },
@@ -103,8 +105,8 @@ export function NotificationList({ onNavigate, compact }: { onNavigate?: () => v
       <div className={cn("flex items-center justify-between gap-2", compact ? "px-3 pb-2" : "mb-3")}>
         <div className="flex gap-1 rounded-xl bg-surface-2 p-1">
           {(["all", "unread"] as const).map((f) => (
-            <button key={f} onClick={() => setFilter(f)} className={cn("h-7 rounded-lg px-3 text-xs font-semibold capitalize transition-colors", filter === f ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink")}>
-              {f}
+            <button key={f} onClick={() => setFilter(f)} aria-pressed={filter === f} className={cn("h-7 rounded-lg px-3 text-xs font-semibold transition-colors", filter === f ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink")}>
+              {f === "all" ? t("All") : t("Unread")}
               {f === "unread" && unread > 0 && ` (${unread})`}
             </button>
           ))}

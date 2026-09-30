@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
-import { createHashRouter, Navigate, RouterProvider, useLocation } from "react-router";
-import { ShieldAlert } from "lucide-react";
+import { createHashRouter, Navigate, RouterProvider, useLocation, useRouteError } from "react-router";
+import { RefreshCw, ShieldAlert } from "lucide-react";
+import { isStaleBuildError, reloadForUpdate } from "@/lib/reload";
 import { api, ApiError } from "@/api";
 import type { Permission } from "@/domain/types";
 import { homeFor, useSession } from "@/state/session";
@@ -97,7 +98,36 @@ function NotFound() {
 
 const lazyPage = (el: ReactNode) => <Suspense fallback={<div className="p-8" />}>{el}</Suspense>;
 
+/**
+ * A screen failed to load or crashed. After an update, a tab still running the
+ * previous version can't load the new screens' files: reload once to get the
+ * new version. Anything else gets a plain message instead of a stack trace.
+ */
+function RouteError() {
+  const error = useRouteError();
+  const stale = isStaleBuildError(error);
+  const [gaveUp, setGaveUp] = useState(false);
+  useEffect(() => {
+    if (!stale) console.error(error);
+    else if (!reloadForUpdate()) setGaveUp(true);
+  }, [error, stale]);
+  if (stale && !gaveUp) return <Splash />;
+  return (
+    <div className="flex min-h-dvh items-center justify-center bg-bg p-6">
+      <EmptyState
+        icon={stale ? RefreshCw : ShieldAlert}
+        title={stale ? t("A new version is available") : t("Something went wrong")}
+        body={stale ? t("Badya Spaces was updated. Reload to continue.") : t("This page ran into a problem. Reload to try again — if it keeps happening, contact the facilities office.")}
+        action={<Button onClick={() => window.location.reload()}>{t("Reload")}</Button>}
+      />
+    </div>
+  );
+}
+
 const router = createHashRouter([
+  {
+    errorElement: <RouteError />,
+    children: [
   { path: "/login", element: <LoginPage /> },
   { path: "/", element: <RootRedirect /> },
   {
@@ -155,6 +185,8 @@ const router = createHashRouter([
     ],
   },
   { path: "*", element: <NotFound /> },
+    ],
+  },
 ]);
 
 export function App() {

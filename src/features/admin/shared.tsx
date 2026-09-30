@@ -143,6 +143,7 @@ export function ReasonDialog({
   description,
   presets = [],
   confirmLabel,
+  dismissLabel,
   variant = "primary",
   loading,
   error,
@@ -157,6 +158,8 @@ export function ReasonDialog({
   description?: ReactNode;
   presets?: string[];
   confirmLabel: string;
+  /** Instead of "Cancel" — needed when the action itself is a cancellation ("Keep booking" / "Cancel booking"). */
+  dismissLabel?: string;
   variant?: ButtonVariant;
   loading?: boolean;
   error?: string;
@@ -180,7 +183,7 @@ export function ReasonDialog({
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
-            {t("Cancel")}
+            {dismissLabel ?? t("Cancel")}
           </Button>
           <Button variant={variant} loading={loading} disabled={!valid} onClick={() => onConfirm(reason.trim())}>
             {confirmLabel}

@@ -249,7 +249,7 @@ export function CloseDialog({ facility, open, onClose }: { facility: StaffFacili
   const until = addMinutes(now, minutes);
   // Same rule the backend applies: confirmed or pending bookings that overlap the closure.
   const inWindow = (facility?.sessions ?? []).flatMap((s) => s.bookings).filter((b) => overlaps(now.getTime(), until.getTime(), new Date(b.start).getTime(), new Date(b.end).getTime()));
-  const affected = inWindow.filter((b) => b.status === "CONFIRMED" || b.status === "PENDING");
+  const affected = inWindow.filter((b) => b.status === "CONFIRMED" || b.status === "PENDING" || b.status === "AWAITING_PLAYERS");
   // Checked-in groups are already on site — the closure doesn't cancel them.
   const onSite = inWindow.filter((b) => b.status === "CHECKED_IN").length;
   const close = useMutation({

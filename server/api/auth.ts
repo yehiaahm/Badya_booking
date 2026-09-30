@@ -2,14 +2,16 @@ import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 
 import { addMinutes } from "date-fns";
 import { clock } from "@/lib/time";
 import { L } from "@/i18n/lang";
-import type { AuthSession, Device, DeviceRequest, User } from "@/domain/types";
+import type { AuthSession, Device, DeviceRequest, RosterEntry, User } from "@/domain/types";
 import { ApiError, type SessionUser } from "@/api/types";
 import { config } from "../config";
 import { ctx } from "../context";
 import { MIN_PASSWORD, hashPassword, temporaryPassword, verifyPassword } from "../password";
-import { audit, currentUser, notify, toSessionUser } from "./core";
+import { audit, currentUser, nationalIdCheck, notify, rosterIndex, rosterUsesIdCheck, toSessionUser } from "./core";
 import { db } from "./db";
 import { FACULTIES } from "./seed/catalog";
+import { dropPushSubscriptions } from "../push";
+import { westernDigits } from "@/lib/roster";
 
 /* ─────────────────────────── Tokens ─────────────────────────── */
 
@@ -84,9 +86,11 @@ export function cookie(name: string, value: string, maxAgeSeconds: number | null
  */
 export function resolveSession(tokenHash: string, deviceId: string | null): { userId: string | null; expired?: boolean } {
   const s = db.state.sessions.find((x) => x.id === tokenHash);
-  if (!s || s.revokedAt) return { userId: null };
+  // Several requests (live updates, background refreshes) can arrive after an idle timeout — all of them say why.
+  if (!s || s.revokedAt) return { userId: null, expired: !!s?.idle };
   const u = db.state.users.find((x) => x.id === s.userId);
-  if (!u || u.status === "suspended") return { userId: null };
+  // A suspended student keeps using the app read-only; closed accounts and suspended staff are signed out.
+  if (!u || u.status === "deactivated" || (u.status === "suspended" && u.role !== "student")) return { userId: null };
   // A session only works on the device it was created on.
   if (!deviceId || s.deviceId !== deviceId) return { userId: null };
   // Students: the device must still be bound to them (an admin may have moved or reset it).
@@ -94,7 +98,7 @@ export function resolveSession(tokenHash: string, deviceId: string | null): { us
   // Students stay signed in on their own device; staff and admins time out when idle.
   const now = clock.now();
   if (u.role !== "student" && now.getTime() - new Date(s.lastSeenAt).getTime() > db.state.settings.sessionTimeoutMinutes * 60000) {
-    void db.transaction(() => db.put("sessions", { ...s, revokedAt: now.toISOString() }), { silent: true });
+    void db.transaction(() => db.put("sessions", { ...s, revokedAt: now.toISOString(), idle: true }), { silent: true });
     return { userId: null, expired: true };
   }
   if (now.getTime() - new Date(s.lastSeenAt).getTime() > 60000) {
@@ -152,6 +156,7 @@ function ensureDevice(): Device {
  * already linked elsewhere, stop and let them ask the facilities office.
  */
 function establish(user: User): SignInResult {
+  if (user.status === "deactivated") throw new ApiError("FORBIDDEN", "This account has been closed. Please contact the facilities office.");
   if (user.status === "suspended") throw new ApiError("FORBIDDEN", "This account is suspended. Please contact Student Affairs.");
   const device = ensureDevice();
   // Staff scan on shared devices, and demo data lets one presenter switch accounts.
@@ -242,6 +247,7 @@ export function decideDeviceRequest(actor: User, id: string, decision: "approved
   if (device.userId && device.userId !== student.id) {
     const prev = device.userId;
     revokeSessions((s) => s.userId === prev && s.deviceId === device.id);
+    dropPushSubscriptions((s) => s.userId === prev && s.deviceId === device.id);
     notify(prev, "device_decision", () => L("A device was unlinked from your account", "تم فك ربط جهاز من حسابك"), () => L(`${device.label} is no longer linked to your account. Sign in on your own device.`, `${device.label} لم يعد مربوطًا بحسابك. سجّل الدخول من جهازك الخاص.`));
   }
   // Keep the student within their device allowance — the oldest link goes first.
@@ -250,6 +256,7 @@ export function decideDeviceRequest(actor: User, id: string, decision: "approved
   for (const old of others.slice(0, Math.max(0, others.length - (max - 1)))) {
     db.put("devices", { ...old, userId: undefined, boundAt: undefined });
     revokeSessions((s) => s.deviceId === old.id && s.userId === student.id);
+    dropPushSubscriptions((s) => s.deviceId === old.id && s.userId === student.id);
   }
   db.put("devices", { ...db.state.devices.find((d) => d.id === device.id)!, userId: student.id, boundAt: at });
   // Anything else waiting on this device is now moot.
@@ -258,14 +265,20 @@ export function decideDeviceRequest(actor: User, id: string, decision: "approved
   notify(student.id, "device_decision", () => L("Device approved", "تمت الموافقة على الجهاز"), () => L(`You can now use Badya Spaces on ${r.deviceLabel}.`, `يمكنك الآن استخدام Badya Spaces من ${r.deviceLabel}.`));
 }
 
+/** A closed account: every session ends, its devices and phone notifications are released, device requests lapse. */
+export function signOutEverywhere(userId: string) {
+  for (const d of db.state.devices) if (d.userId === userId) db.put("devices", { ...d, userId: undefined, boundAt: undefined });
+  revokeSessions((s) => s.userId === userId);
+  dropPushSubscriptions((s) => s.userId === userId);
+  for (const x of db.state.deviceRequests) if (x.userId === userId && x.status === "pending") db.put("deviceRequests", { ...x, status: "cancelled" });
+}
+
 /** Admin: unlink every device from a student. Their next sign-in links the device they use. */
 export function resetDevices(actor: User, userId: string, reason: string) {
   const student = db.state.users.find((u) => u.id === userId && u.role === "student");
   if (!student) throw new ApiError("NOT_FOUND", "Student not found.");
   const linked = db.state.devices.filter((d) => d.userId === userId);
-  for (const d of linked) db.put("devices", { ...d, userId: undefined, boundAt: undefined });
-  revokeSessions((s) => s.userId === userId);
-  for (const x of db.state.deviceRequests) if (x.userId === userId && x.status === "pending") db.put("deviceRequests", { ...x, status: "cancelled" });
+  signOutEverywhere(userId);
   audit(actor, "device.reset", "device", userId, student.name, `Unlinked ${linked.length} ${linked.length === 1 ? "device" : "devices"} — ${reason}`);
   notify(student.id, "device_decision", () => L("Your devices were reset", "تمت إعادة ضبط أجهزتك"), () => L(`The facilities office unlinked your devices (${reason}). The next device you sign in on becomes your linked device.`, `فك مكتب إدارة المرافق ربط أجهزتك (${reason}). أول جهاز تسجّل الدخول منه سيصبح جهازك المربوط.`));
 }
@@ -305,6 +318,45 @@ function checkPassword(p: string, known: (string | undefined)[] = []) {
   if (guessable) throw new ApiError("VALIDATION", "That password is too easy to guess. Don’t use your university ID, your email or a simple sequence.");
 }
 
+/** Wrong national-ID digits per university ID (timestamps). Kept in memory — a restart simply forgets them. */
+const idCheckFailures = new Map<string, number[]>();
+const ID_CHECK_TRIES = 5;
+/** Five wrong tries pause the ID for a day: guessing four digits would take months. */
+const ID_CHECK_WINDOW = 24 * 3600_000;
+
+/** A newly loaded list may have corrected someone's digits — everyone paused gets a fresh start. */
+export function clearRegistrationLocks() {
+  idCheckFailures.clear();
+}
+
+/**
+ * Registration is open only to university IDs on the official student list.
+ * Returns the student's entry — its details become the account's.
+ */
+function checkAgainstList(universityId: string, email: string, lastFour: string | undefined): RosterEntry {
+  const roster = rosterIndex();
+  if (!roster) throw new ApiError("VALIDATION", L("Registration opens once the facilities office has loaded the official student list. Please try again later, or visit the office.", "يُفتح التسجيل بعد أن يرفع مكتب إدارة المرافق قائمة الطلاب الرسمية. حاول لاحقًا، أو توجّه للمكتب."));
+  const listed = roster.get(universityId);
+  if (!listed) throw new ApiError("VALIDATION", L("This university ID isn’t on the official student list. Check it against your student card, or visit the facilities office.", "هذا الرقم الجامعي غير موجود في قائمة الطلاب الرسمية. راجعه على الكارنيه، أو توجّه لمكتب إدارة المرافق."));
+  if (listed.status === "inactive") throw new ApiError("VALIDATION", L("This university ID isn’t active on the official student list. If you’re a current student, visit the facilities office with your student card.", "هذا الرقم الجامعي غير نشط في قائمة الطلاب الرسمية. إذا كنت طالبًا حاليًا، توجّه لمكتب إدارة المرافق ومعك الكارنيه."));
+  if (listed.email && listed.email !== email) throw new ApiError("VALIDATION", L("This email doesn’t match the university’s records for this ID. Use your own university email.", "هذا البريد لا يطابق سجلات الجامعة لهذا الرقم. استخدم بريدك الجامعي الخاص."));
+  if (listed.idCheck) {
+    const now = Date.now();
+    const recent = (idCheckFailures.get(universityId) ?? []).filter((t) => now - t < ID_CHECK_WINDOW);
+    if (recent.length >= ID_CHECK_TRIES) throw new ApiError("RATE_LIMITED", L("Too many wrong attempts for this university ID. Try again tomorrow — or, if you’re sure of your digits, visit the facilities office with your student card so they can check the student list.", "محاولات خاطئة كثيرة لهذا الرقم الجامعي. حاول غدًا — وإذا كنت متأكدًا من أرقامك، توجّه لمكتب إدارة المرافق ومعك الكارنيه لمراجعة قائمة الطلاب."));
+    const digits = westernDigits(lastFour ?? "").replace(/\s/g, "");
+    if (!/^\d{4}$/.test(digits)) throw new ApiError("VALIDATION", L("Enter the last 4 digits of your national ID.", "اكتب آخر 4 أرقام من رقمك القومي."));
+    if (!safeEqual(nationalIdCheck(universityId, digits), listed.idCheck)) {
+      recent.push(now);
+      idCheckFailures.set(universityId, recent);
+      if (recent.length === ID_CHECK_TRIES) void db.transaction(() => audit("system", "user.register_locked", "user", universityId, universityId, `Registration with university ID ${universityId} paused for a day after ${ID_CHECK_TRIES} wrong national-ID digits`));
+      throw new ApiError("VALIDATION", L("The last 4 digits of your national ID don’t match the university’s records.", "آخر 4 أرقام من الرقم القومي لا تطابق سجلات الجامعة."));
+    }
+    idCheckFailures.delete(universityId);
+  }
+  return listed;
+}
+
 /** Admin: give someone a new temporary password (to hand over in person). */
 export async function setTemporaryPassword(actor: User, user: User): Promise<string> {
   const password = temporaryPassword();
@@ -312,7 +364,10 @@ export async function setTemporaryPassword(actor: User, user: User): Promise<str
   await db.transaction(() => {
     db.put("credentials", { id: user.id, hash, updatedAt: clock.now().toISOString(), temporary: true });
     // Staff and admins are signed out; a student keeps their own phone signed in.
-    if (user.role !== "student") revokeSessions((s) => s.userId === user.id);
+    if (user.role !== "student") {
+      revokeSessions((s) => s.userId === user.id);
+      dropPushSubscriptions((s) => s.userId === user.id);
+    }
     audit(actor, "user.password_reset", "user", user.id, user.name, `Set a new temporary password for ${user.name}`);
   });
   return password;
@@ -336,6 +391,12 @@ export const auth = {
       supportEmail: s.supportEmail,
       allowedEmailDomains: s.allowedEmailDomains,
       faculties: FACULTIES,
+      /** Registration only accepts university IDs on the uploaded official list — with none loaded, it's closed. */
+      studentList: !!rosterIndex(),
+      /** Registration asks for the last 4 digits of the national ID. */
+      idCheck: rosterUsesIdCheck(),
+      /** Public half of the key that signs push notifications. */
+      pushPublicKey: config.vapid.publicKey,
       demo: demoSignInAllowed(),
       demoAccounts: demoSignInAllowed()
         ? [
@@ -350,10 +411,12 @@ export const auth = {
 
   /** Sign in with a university ID or email and a password. */
   async signIn(rawIdentifier: string, password: string): Promise<SignInResult> {
-    const id = rawIdentifier.trim().toLowerCase();
+    const id = westernDigits(rawIdentifier).trim().toLowerCase();
     if (!id || !password) throw new ApiError("VALIDATION", "Enter your university ID or email and your password.");
     limit("signin", 2000, 3600_000);
-    const user = db.state.users.find((u) => u.email.toLowerCase() === id || (!!u.universityId && u.universityId === id));
+    // A closed account keeps its email and ID for history; a newer account with them wins.
+    const matches = db.state.users.filter((u) => u.email.toLowerCase() === id || (!!u.universityId && u.universityId === id));
+    const user = matches.find((u) => u.status !== "deactivated") ?? matches[0];
     const cred = user ? db.state.credentials.find((c) => c.id === user.id) : undefined;
     const now = clock.now().getTime();
     const streakKey = user ? `${user.id}|${ctx().ip}` : "";
@@ -385,10 +448,15 @@ export const auth = {
     });
   },
 
-  /** A new student creates their account — it's linked to this device straight away. */
-  async register(p: { name: string; nameAr?: string; email: string; universityId: string; faculty: string; year: number; level: "undergraduate" | "postgraduate"; password: string }): Promise<SignInResult> {
+  /**
+   * A new student creates their account — it's linked to this device straight away.
+   * Only university IDs on the official student list can register, and the
+   * list's details (name, faculty, year) win over what was typed. Where the
+   * list has national-ID digits, they prove the ID is the student's own.
+   */
+  async register(p: { name: string; nameAr?: string; email: string; universityId: string; faculty: string; year: number; level: "undergraduate" | "postgraduate"; password: string; nationalIdLast4?: string }): Promise<SignInResult> {
     const email = normEmail(p.email);
-    const universityId = p.universityId.trim();
+    const universityId = westernDigits(p.universityId).trim();
     const name = p.name.trim().replace(/\s+/g, " ");
     // Letters, spaces, dots, hyphens and apostrophes only — names end up in exports and messages.
     if (name.split(" ").length < 2 || name.length < 5 || !/^\p{L}[\p{L}\p{M} .'’-]*$/u.test(name) || (p.nameAr && !/^[\p{L}\p{M} .'’-]*$/u.test(p.nameAr.trim()))) {
@@ -396,28 +464,34 @@ export const auth = {
     }
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new ApiError("VALIDATION", "Enter your university email address.");
     if (!domainAllowed(email)) throw new ApiError("VALIDATION", L(`Use your university email (${db.state.settings.allowedEmailDomains.map((d) => "@" + d).join(" or ")}).`, `استخدم بريدك الجامعي (${db.state.settings.allowedEmailDomains.map((d) => "@" + d).join(" أو ")}).`));
-    if (!/^\d{5,12}$/.test(universityId)) throw new ApiError("VALIDATION", "Your university ID should be digits only.");
+    if (!/^\d+$/.test(universityId)) throw new ApiError("VALIDATION", "Your university ID should be digits only.");
+    if (!/^\d{5,12}$/.test(universityId)) throw new ApiError("VALIDATION", "Your university ID should be 5 to 12 digits.");
     if (!FACULTIES.includes(p.faculty)) throw new ApiError("VALIDATION", "Choose your faculty from the list.");
     checkPassword(p.password, [universityId, email, email.split("@")[0]]);
     limit("register", 1000, 3600_000);
+    const checked = checkAgainstList(universityId, email, p.nationalIdLast4);
     const hash = await hashPassword(p.password);
     return db.transaction(() => {
-      if (db.state.users.some((u) => u.email.toLowerCase() === email)) throw new ApiError("CONFLICT", "An account already uses this email. Sign in instead — or, if it isn’t yours, contact the facilities office.");
-      if (db.state.users.some((u) => u.universityId === universityId)) throw new ApiError("CONFLICT", "An account already uses this university ID. If it’s yours, contact the facilities office.");
+      // The list may have been replaced while the password was hashed: check against the one in force now.
+      const listed = rosterIndex()?.get(universityId) === checked ? checked : checkAgainstList(universityId, email, p.nationalIdLast4);
+      // Closed accounts keep their details for history but don't hold them.
+      const live = db.state.users.filter((u) => u.status !== "deactivated");
+      if (live.some((u) => u.email.toLowerCase() === email)) throw new ApiError("CONFLICT", "An account already uses this email. Sign in instead — or, if it isn’t yours, contact the facilities office.");
+      if (live.some((u) => u.universityId === universityId)) throw new ApiError("CONFLICT", "An account already uses this university ID. If it’s yours, contact the facilities office.");
       const now = clock.now().toISOString();
       const u: User = {
         id: `u_${randomBytes(6).toString("hex")}`,
         role: "student",
-        name,
-        nameAr: p.nameAr?.trim() || undefined,
+        name: listed.name ?? name,
+        nameAr: listed.nameAr ?? (p.nameAr?.trim() || undefined),
         email,
         avatarHue: randomInt(0, 360),
         status: "active",
         createdAt: now,
         universityId,
-        faculty: p.faculty,
-        year: p.year,
-        audience: p.level,
+        faculty: listed.faculty ?? p.faculty,
+        year: listed.year ?? p.year,
+        audience: listed.level ?? p.level,
         preferences: { reminderMinutes: db.state.settings.reminderMinutesBefore, waitlistAlerts: true, emailDigest: false, language: ctx().language },
       };
       db.put("users", u);
@@ -460,7 +534,9 @@ export const auth = {
       db.put("credentials", { id: u.id, hash, updatedAt: clock.now().toISOString(), temporary: false });
       // Sign out everywhere else.
       const here = ctx().sessionId;
+      const device = ctx().deviceId;
       revokeSessions((s) => s.userId === u.id && s.id !== here);
+      dropPushSubscriptions((s) => s.userId === u.id && s.deviceId !== device);
       audit(u, "user.password", "user", u.id, u.name, "Changed their password");
     });
   },
@@ -505,7 +581,10 @@ export const auth = {
       const s = db.state.sessions.find((x) => x.id === c.sessionId);
       if (s && !s.revokedAt) db.put("sessions", { ...s, revokedAt: clock.now().toISOString() });
       const u = s && db.state.users.find((x) => x.id === s.userId);
-      if (u) audit(u, "session.sign_out", "session", u.id, u.name, "Signed out");
+      if (u) {
+        dropPushSubscriptions((x) => x.userId === u.id && x.deviceId === c.deviceId);
+        audit(u, "session.sign_out", "session", u.id, u.name, "Signed out");
+      }
     });
   },
 };

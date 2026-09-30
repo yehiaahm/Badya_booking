@@ -1,14 +1,17 @@
+import { createHmac } from "node:crypto";
 import { addMinutes } from "date-fns";
 import { clock, fmtRange, fmtDayShort } from "@/lib/time";
-import { EngineIndex, computeStanding, describeSession, findSession, ladderStepFor, strikesFor } from "@/domain/engine";
+import { EngineIndex, UPCOMING_STATUSES, computeStanding, describeSession, findSession, hasJoined, ladderStepFor, peopleLimits, playersOf, strikesFor } from "@/domain/engine";
 import { resolvePolicy } from "@/domain/policy";
-import type { AppNotification, AuditLog, Booking, Facility, NotificationType, Permission, RoleKey, User, WaitlistEntry } from "@/domain/types";
+import type { AppNotification, AuditLog, Booking, Facility, NotificationType, Permission, RoleKey, RosterEntry, User, WaitlistEntry } from "@/domain/types";
 import { ApiError, type BookingView, type CancelInfo, type PublicUser, type SessionUser } from "@/api/types";
 import { db } from "./db";
 import { DEMO } from "./state";
 import { L, N, currentLanguage, withLanguage } from "@/i18n/lang";
 import { facilityName, localFacility } from "@/domain/localize";
 import { ctx, requestContext } from "../context";
+import { config } from "../config";
+import { queuePush } from "../push";
 
 /* ─────────────────────────── Sessions & RBAC ─────────────────────────── */
 
@@ -28,8 +31,19 @@ export function currentUser(): User {
   const c = ctx();
   if (!c.userId) throw new ApiError("UNAUTHENTICATED", "Please sign in to continue.");
   const u = db.state.users.find((x) => x.id === c.userId);
-  if (!u || u.status === "suspended") throw new ApiError("UNAUTHENTICATED", "Your account can’t be used right now. Please contact Student Affairs.");
+  // A suspended student keeps read-only access; everyone else suspended, and every closed account, is out.
+  if (!u || u.status === "deactivated" || (u.status === "suspended" && u.role !== "student")) throw new ApiError("UNAUTHENTICATED", "Your account can’t be used right now. Please contact Student Affairs.");
   return u;
+}
+
+/**
+ * New bookings, waitlist places and invitations need an account in good
+ * standing. A suspended student can still see, cancel and leave bookings.
+ */
+export function requireActiveAccount(u: User) {
+  if (u.status === "active") return;
+  const why = u.statusNote?.reason;
+  throw new ApiError("FORBIDDEN", L(`Your account is suspended${why ? ` (${why})` : ""}. You can still see and cancel your bookings — contact the facilities office to book again.`, `حسابك موقوف${why ? ` (${why})` : ""}. يمكنك رؤية حجوزاتك وإلغاؤها — تواصل مع مكتب إدارة المرافق لتتمكن من الحجز مرة أخرى.`));
 }
 
 export function requirePermission(perm: Permission): User {
@@ -46,6 +60,22 @@ export function hasPermission(u: User, perm: Permission) {
 
 /* ─────────────────────────── Engine access ─────────────────────────── */
 
+let rosterFor: { rows: RosterEntry[]; index: ReadonlyMap<string, RosterEntry> | null; idCheck: boolean } | null = null;
+function rosterCache() {
+  const rows = db.state.roster;
+  if (rosterFor?.rows !== rows) rosterFor = { rows, index: rows.length ? new Map(rows.map((r) => [r.id, r])) : null, idCheck: rows.some((r) => r.idCheck) };
+  return rosterFor;
+}
+/** The official list by university ID, or null when no list is loaded. Rebuilt only when the list changes. */
+export const rosterIndex = (): ReadonlyMap<string, RosterEntry> | null => rosterCache().index;
+/** The list carries national-ID digits, so registration asks for them. */
+export const rosterUsesIdCheck = () => rosterCache().idCheck;
+
+/** Keyed hash of a student's national-ID digits, bound to their university ID. */
+export function nationalIdCheck(universityId: string, lastFour: string): string {
+  return createHmac("sha256", config.rosterSecret).update(`nid:${universityId}:${lastFour}`).digest("base64url");
+}
+
 export function engine(now = clock.now()): EngineIndex {
   const s = db.state;
   return new EngineIndex({
@@ -59,6 +89,7 @@ export function engine(now = clock.now()): EngineIndex {
     maintenance: s.maintenance,
     restrictions: s.restrictions,
     users: s.users,
+    roster: rosterIndex(),
   });
 }
 
@@ -80,6 +111,9 @@ export function policyFor(f: Facility) {
 
 /* ─────────────────────────── DTO mapping ─────────────────────────── */
 
+/** Another student's university ID as students see it: enough to tell people apart, not enough to register as them. */
+export const maskedId = (id: string | undefined) => (id ? `•••${id.slice(-3)}` : undefined);
+
 export function toPublic(u: User | undefined, withId = true): PublicUser {
   if (!u) return { id: "unknown", name: "Former student", avatarHue: 0, role: "student" };
   return { id: u.id, name: u.name, avatarHue: u.avatarHue, role: u.role, universityId: withId ? u.universityId : undefined, faculty: u.faculty, year: u.year };
@@ -95,7 +129,7 @@ export function cancelInfo(b: Booking, f: Facility, now = clock.now()): CancelIn
   const p = policyFor(f);
   const start = new Date(b.start);
   const freeUntil = addMinutes(start, -p.cancellation.freeUntilMinutes);
-  const allowed = (b.status === "CONFIRMED" || b.status === "PENDING") && start > now;
+  const allowed = UPCOMING_STATUSES.has(b.status) && start > now;
   const late = allowed && now > freeUntil && b.status === "CONFIRMED";
   return {
     allowed,
@@ -113,14 +147,24 @@ export function toView(b: Booking, viewerId?: string): BookingView {
   const users = new Map(s.users.map((u) => [u.id, u]));
   const p = policyFor(f);
   const start = new Date(b.start);
+  const mine = b.participants.find((x) => x.userId === viewerId);
+  // Students see other students' university IDs masked; staff and administrators see them in full.
+  const viewer = viewerId ? users.get(viewerId) : undefined;
+  const person = (u: User | undefined): PublicUser => {
+    const p = toPublic(u);
+    return viewer?.role === "student" && u && u.id !== viewer.id ? { ...p, universityId: maskedId(p.universityId) } : p;
+  };
   return {
     ...b,
     facility: f,
     category: cat,
-    booker: toPublic(users.get(b.userId)),
-    people: b.participants.map((x) => toPublic(users.get(x.userId))),
+    booker: person(users.get(b.userId)),
+    people: b.participants.filter(hasJoined).map((x) => person(users.get(x.userId))),
+    team: b.participants.map((x) => ({ user: person(users.get(x.userId)), status: x.status ?? "accepted" })),
+    playersNeeded: b.status === "AWAITING_PLAYERS" ? Math.max(0, peopleLimits(f, p).min - playersOf(b).length) : 0,
+    peopleLimits: peopleLimits(f, p),
     unitName: unitName(f, b.unitIndex),
-    relation: viewerId === b.userId ? "booker" : b.participants.some((x) => x.userId === viewerId) ? "participant" : "staff",
+    relation: viewerId === b.userId ? "booker" : mine && hasJoined(mine) ? "participant" : mine?.status === "invited" ? "invited" : "staff",
     cancel: cancelInfo(b, f),
     checkInWindow: { opens: addMinutes(start, -p.checkIn.opensMinutesBefore).toISOString(), closes: addMinutes(start, p.checkIn.graceMinutes).toISOString() },
   };
@@ -136,6 +180,7 @@ export function notify(userId: string, type: NotificationType, title: NotifyText
   const [t, b] = withLanguage(lang, () => [typeof title === "function" ? title() : title, typeof body === "function" ? body() : body]);
   const n: AppNotification = { id: `N-${db.nextSeq()}`, userId, type, title: t, body: b, createdAt: clock.now().toISOString(), ...extra };
   db.put("notifications", n);
+  queuePush(n);
   return n;
 }
 
@@ -180,17 +225,22 @@ export function offerNext(facilityId: string, start: string): WaitlistEntry | un
   const ix = engine(now);
   const info = describeSession(ix, f, slot.start, slot.end);
   if (info.remaining <= 0) return;
-  const queue = db.state.waitlist.filter((w) => w.facilityId === facilityId && w.start === start && w.status === "waiting").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  // Someone who couldn't claim the spot (a suspended or closed account) is passed over, not held for.
+  const canClaim = (userId: string) => db.state.users.find((u) => u.id === userId)?.status === "active";
+  const queue = db.state.waitlist.filter((w) => w.facilityId === facilityId && w.start === start && w.status === "waiting" && canClaim(w.userId)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const next = queue[0];
   if (!next) return;
-  const expires = addMinutes(now, p.waitlist.claimMinutes);
+  // Never hold a spot past the moment booking closes for the session — it couldn't be claimed then.
+  const closes = addMinutes(new Date(start), -p.window.minLeadMinutes);
+  const expires = new Date(Math.min(addMinutes(now, p.waitlist.claimMinutes).getTime(), closes.getTime()));
+  const holdMinutes = Math.max(1, Math.floor((expires.getTime() - now.getTime()) / 60000));
   const offered: WaitlistEntry = { ...next, status: "offered", offeredAt: now.toISOString(), offerExpiresAt: expires.toISOString() };
   db.put("waitlist", offered);
   notify(
     next.userId,
     "slot_available",
     () => L(`A spot opened on ${f.name}`, `توفر مكان في ${facilityName(f)}`),
-    () => L(`${sessionLabel(next)}. It’s held for you for ${p.waitlist.claimMinutes} minutes — claim it before it moves to the next student.`, `${sessionLabel(next)}. المكان محجوز لك لمدة ${N.minute(p.waitlist.claimMinutes)} — احجزه قبل أن ينتقل للطالب التالي.`),
+    () => L(`${sessionLabel(next)}. It’s held for you for ${holdMinutes} ${holdMinutes === 1 ? "minute" : "minutes"} — claim it before it moves to the next student.`, `${sessionLabel(next)}. المكان محجوز لك لمدة ${N.minute(holdMinutes)} — احجزه قبل أن ينتقل للطالب التالي.`),
     {
     link: "/bookings?tab=waitlist",
     data: { waitlistId: next.id, facilityId, expiresAt: offered.offerExpiresAt },
@@ -236,6 +286,25 @@ export function applyLadder(userId: string, actor: User | "system") {
   }
 }
 
+/**
+ * After a strike is waived: an automatic pause exists only because of the
+ * strike count, so if the student is now below the ladder's pause step it
+ * ends too. Pauses an administrator set by hand stay as they are.
+ */
+export function liftAutoRestrictionIfCleared(userId: string, actor: User) {
+  const ix = engine();
+  const r = ix.activeRestriction(userId);
+  if (!r || r.source !== "auto") return;
+  const policy = db.state.globalPolicy;
+  const pauseAt = policy.noShow.ladder.find((s) => s.action === "restrict")?.strikes;
+  const { active } = strikesFor(ix.involvements(userId), userId, policy, ix.now);
+  if (pauseAt === undefined || active.length >= pauseAt) return;
+  db.put("restrictions", { ...r, lifted: { at: clock.now().toISOString(), byUserId: actor.id, reason: "A strike was waived" } });
+  const u = db.state.users.find((x) => x.id === userId);
+  notify(userId, "restriction", () => L("You can book again", "يمكنك الحجز مرة أخرى"), () => L("A missed session was forgiven, so your automatic booking pause has been lifted.", "تم إلغاء مخالفة غياب، لذلك رُفع إيقاف الحجز التلقائي عنك."), { link: "/explore" });
+  audit(actor, "restriction.lift", "restriction", r.id, u?.name ?? userId, "Lifted the automatic pause — a strike was waived and the student is below the limit again");
+}
+
 /* ─────────────────────────── Scheduler ─────────────────────────── */
 
 /** Stable pseudo-random fate for simulated students (0–1). */
@@ -269,6 +338,7 @@ export async function tick(force = false) {
         const en = new Date(b.end).getTime();
         if (b.status === "CHECKED_IN") return en <= nowMs;
         if (b.status === "PENDING") return st <= nowMs;
+        if (b.status === "AWAITING_PLAYERS") return st <= nowMs || (!!b.playersDeadline && new Date(b.playersDeadline).getTime() <= nowMs);
         if (b.status === "CONFIRMED") return st <= nowMs + 3 * 3600000;
         return false;
       }) || s.waitlist.some((w) => w.status === "offered" && w.offerExpiresAt && new Date(w.offerExpiresAt).getTime() <= nowMs);
@@ -306,6 +376,13 @@ export async function tick(force = false) {
         const graceEnd = start + p.checkIn.graceMinutes * 60000;
         const simulated = demoData && new Date(b.createdAt).getTime() <= anchor && b.userId !== DEMO.student;
 
+        if (b.status === "AWAITING_PLAYERS") {
+          if (start <= nowMs || (b.playersDeadline && new Date(b.playersDeadline).getTime() <= nowMs)) {
+            cancelShortOfPlayers(b, f);
+            reopen.push({ facilityId: b.facilityId, start: b.start });
+          }
+          continue;
+        }
         if (b.status === "PENDING" && start <= nowMs) {
           updateBooking(b, { status: "EXPIRED", expiredAt: now.toISOString() });
           notify(
@@ -342,8 +419,9 @@ export async function tick(force = false) {
         if (!b.reminderSentAt && isActive(b.userId) && start > nowMs && start - nowMs <= remind * 60000) {
           updateBooking(b, { reminderSentAt: now.toISOString() });
           const mins = Math.round((start - nowMs) / 60000);
-          notify(
-            b.userId,
+          // Everyone playing gets the reminder, not just the booker.
+          for (const who of playersOf(b)) notify(
+            who,
             "booking_reminder",
             () => L(`${f.name} starts in ${mins} min`, `${facilityName(f)} يبدأ بعد ${N.minute(mins)}`),
             () => {
@@ -362,6 +440,21 @@ export async function tick(force = false) {
   } finally {
     ticking = false;
   }
+}
+
+/** Too few invited players accepted in time: cancel without a strike and free the session for others. */
+export function cancelShortOfPlayers(b: Booking, f: Facility) {
+  updateBooking(b, { status: "CANCELLED", playersDeadline: undefined, cancellation: { at: clock.now().toISOString(), byUserId: "system", reason: "Not enough players accepted in time", late: false, penalty: false, byRole: "system" } });
+  for (const id of playersOf(b)) {
+    notify(
+      id,
+      "booking_cancelled",
+      () => L(`${f.name} booking cancelled`, `تم إلغاء حجز ${facilityName(f)}`),
+      () => L(`Not enough players accepted in time for ${sessionLabel(b)}, so the session was released for other students. No strike has been recorded.`, `لم يوافق عدد كافٍ من اللاعبين في الوقت المحدد لموعد ${sessionLabel(b)}، لذلك أُتيح الموعد لطلاب آخرين. لم تُسجّل عليك مخالفة.`),
+      { link: `/bookings/${b.id}`, data: { bookingId: b.id } },
+    );
+  }
+  audit("system", "booking.cancel", "booking", b.id, b.id, `Cancelled ${f.name}, ${withLanguage("en", () => sessionLabel(b))} — not enough players accepted in time`);
 }
 
 export function standingFor(userId: string) {

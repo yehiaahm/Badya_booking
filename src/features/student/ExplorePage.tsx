@@ -204,7 +204,7 @@ export function ExplorePage() {
         {facilities.isError ? (
           <ErrorState error={facilities.error} onRetry={() => facilities.refetch()} />
         ) : !facilities.data ? (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {Array.from({ length: 6 }, (_, i) => (
               <FacilityCardSkeleton key={i} />
             ))}
@@ -213,7 +213,7 @@ export function ExplorePage() {
           <EmptyState
             icon={SearchX}
             title={q.trim() ? tr("Nothing matches “{q}”", { q: q.trim() }) : tr("No facilities match these filters")}
-            body={tr("Try a different word, another category, or fewer filters. Building names and amenities work too — try “floodlights” or “Activity Center”.")}
+            body={tr("Try a different word, another category, or fewer filters. Building names and amenities work too — try “air-conditioned” or “Activity Center”.")}
             action={
               <Button variant="secondary" onClick={clearAll}>
                 {tr("Clear search and filters")}
@@ -227,11 +227,11 @@ export function ExplorePage() {
               {q.trim() && (
                 <>
                   {" "}
-                  {tr("for")}{" "}<span className="font-semibold text-ink">“{q.trim()}”</span>
+                  {tr("matching")}{" "}<span className="font-semibold text-ink">“{q.trim()}”</span>
                 </>
               )}
             </p>
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
               <AnimatePresence mode="popLayout">
                 {results.map((s) => (
                   <FacilityCard key={s.facility.id} s={s} />

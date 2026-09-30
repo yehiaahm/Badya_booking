@@ -41,11 +41,12 @@ function hourCurve(motif: string, hour: number): number {
     case "volleyball":
     case "tennis":
     case "padel":
-      return hour < 10 ? 0.22 : hour < 15 ? 0.32 : hour < 17 ? 0.58 : hour < 22 ? 0.95 : 0.55;
+      // Open 09:00–15:00: quiet in the first hour, busiest after midday lectures.
+      return hour < 10 ? 0.3 : hour < 12 ? 0.55 : 0.9;
     case "tabletennis":
     case "billiards":
     case "airhockey":
-      return hour < 12 ? 0.3 : hour < 15 ? 0.62 : hour < 18 ? 0.88 : 0.7;
+      return hour < 11 ? 0.35 : hour < 13 ? 0.65 : 0.88;
     default:
       return 0.5;
   }
@@ -253,10 +254,10 @@ export function createSeed(anchorISO: string): DbState {
     maintenance.push(m);
     return m;
   };
-  const mtBilliards = maint("f_billiards", openDayFrom("f_billiards", 2), "12:00", "16:00", "Table re-felting", "planned", "u_admin_nour", 72);
+  const mtBilliards = maint("f_billiards", openDayFrom("f_billiards", 2), "11:00", "13:00", "Table re-felting", "planned", "u_admin_nour", 72);
   maint("f_pingpong", openDayFrom("f_pingpong", -6), "10:00", "12:00", "New nets and paddles installed", "planned", "u_admin_nour", 120);
-  const mtFoot = maint("f_football", -4, "20:00", "22:00", "Floodlight failure on the north side", "staff_closure", "u_staff_karim", 0.4);
-  maint("f_volleyball", 5, "08:00", "12:00", "Court line repainting", "planned", "u_admin_dina", 50);
+  const mtFoot = maint("f_football", -4, "13:00", "15:00", "Torn goal net on the north side", "staff_closure", "u_staff_karim", 0.4);
+  maint("f_volleyball", 5, "09:00", "11:00", "Court line repainting", "planned", "u_admin_dina", 50);
   const inMaintenance = (fid: string, s: number, e: number) => maintenance.some((m) => m.facilityId === fid && s < new Date(m.end).getTime() && new Date(m.start).getTime() < e);
 
   /* ─────────────────────── Scenario: Yehia ─────────────────────── */
@@ -264,25 +265,25 @@ export function createSeed(anchorISO: string): DbState {
   const scen: Record<string, Booking> = {};
   const squadY = ["u_omar", "u_youssef", "u_seif", "u_ziad", "u_adham", "u_marwan"];
   {
-    let x = S("f_football", -12, "19:00");
+    let x = S("f_football", -12, "13:00");
     scen.y1 = completed(mk("f_football", x.start, x.end, Y, squadY, before(x.start, 30)));
-    x = S("f_volleyball", -8, "20:00");
+    x = S("f_volleyball", -8, "14:00");
     scen.y2 = completed(mk("f_volleyball", x.start, x.end, "u_omar", [Y, "u_youssef", "u_hussein", "u_karim_adel", "u_ziad", "u_seif"], before(x.start, 40)));
-    x = S("f_football", -5, "18:00");
+    x = S("f_football", -5, "12:00");
     scen.y3 = completed(mk("f_football", x.start, x.end, "u_omar", [Y, "u_marwan", "u_adham", "u_seif", "u_youssef", "u_hussein"], before(x.start, 50)));
-    x = S("f_volleyball", -2, "19:00");
+    x = S("f_volleyball", -2, "13:00");
     scen.y4 = completed(mk("f_volleyball", x.start, x.end, Y, ["u_omar", "u_ziad", "u_karim_adel", "u_marwan", "u_adham", "u_youssef"], before(x.start, 28)));
     x = S("f_pingpong", openDayFrom("f_pingpong", -10), "12:00");
     scen.y5 = noShow(mk("f_pingpong", x.start, x.end, Y, [], before(x.start, 11)));
-    x = S("f_tennis", -6, "17:00");
+    x = S("f_tennis", -6, "11:00");
     scen.y6 = cancel(mk("f_tennis", x.start, x.end, Y, ["u_salma"], before(x.start, 52)), before(x.start, 21), Y, "Plans changed");
-    x = S("f_billiards", openDayFrom("f_billiards", -3), "15:00");
+    x = S("f_billiards", openDayFrom("f_billiards", -3), "13:30");
     scen.y7 = completed(mk("f_billiards", x.start, x.end, Y, ["u_omar"], before(x.start, 14)));
     x = S("f_airhockey", openDayFrom("f_airhockey", -1), "14:00");
     scen.y8 = completed(mk("f_airhockey", x.start, x.end, Y, ["u_youssef"], before(x.start, 6)), "manual");
-    x = S("f_pingpong", openDayFrom("f_pingpong", -4), "16:30");
+    x = S("f_pingpong", openDayFrom("f_pingpong", -4), "14:30");
     scen.y9 = completed(mk("f_pingpong", x.start, x.end, Y, [], before(x.start, 6)));
-    x = S("f_padel", -7, "20:00");
+    x = S("f_padel", -7, "13:30");
     scen.y11 = completed(mk("f_padel", x.start, x.end, Y, ["u_omar", "u_salma", "u_mariam"], before(x.start, 45)));
 
     // Upcoming: ping-pong later today (or on the next open day).
@@ -291,31 +292,31 @@ export function createSeed(anchorISO: string): DbState {
     if (!up) up = S("f_pingpong", openDayFrom("f_pingpong", 1), "13:00");
     scen.yPing = mk("f_pingpong", up.start, up.end, Y, [], A - 3 * HOUR - 12 * MIN);
 
-    // Upcoming: football tomorrow 18:00 with the squad.
-    x = S("f_football", 1, "18:00");
+    // Upcoming: football tomorrow at noon with the squad.
+    x = S("f_football", 1, "12:00");
     scen.yFootball = mk("f_football", x.start, x.end, Y, squadY, A - 20 * HOUR - 46 * MIN);
-    reservedEmpty.add(sKey("f_football", S("f_football", 1, "19:00").start.getTime()));
+    reservedEmpty.add(sKey("f_football", S("f_football", 1, "12:30").start.getTime()));
   }
 
   /* Omar's booking the day after — used to demonstrate linked-group detection. */
   {
-    const x = S("f_football", 2, "19:00");
+    const x = S("f_football", 2, "13:00");
     const outsiders = pool.filter((u) => canPlace(u.id, x.start.getTime(), x.end.getTime(), facById.get("f_football")!)).slice(40, 44).map((u) => u.id);
     scen.omarD2 = mk("f_football", x.start, x.end, "u_omar", ["u_hussein", "u_karim_adel", ...outsiders], A - 9 * HOUR);
-    reservedEmpty.add(sKey("f_football", S("f_football", 2, "20:00").start.getTime()));
+    reservedEmpty.add(sKey("f_football", S("f_football", 2, "13:30").start.getTime()));
   }
 
   /* ─────────────────────── Scenario: Ahmed & Mohamed ─────────────────────── */
   {
-    let x = S("f_football", -13, "20:00");
+    let x = S("f_football", -13, "14:00");
     scen.am1 = completed(mk("f_football", x.start, x.end, "u_ahmed", ["u_mohamed", "u_ali", "u_hamza", "u_amr", "u_belal"], before(x.start, 30)));
-    x = S("f_volleyball", -9, "19:00");
+    x = S("f_volleyball", -9, "13:00");
     scen.am2 = completed(mk("f_volleyball", x.start, x.end, "u_mohamed", ["u_ahmed", "u_eyad", "u_moaz", "u_ali", "u_hamza"], before(x.start, 26)));
-    x = S("f_volleyball", -6, "18:00");
+    x = S("f_volleyball", -6, "12:00");
     scen.am3 = completed(mk("f_volleyball", x.start, x.end, "u_ahmed", ["u_mohamed", "u_belal", "u_amr", "u_eyad", "u_ali"], before(x.start, 20)));
-    x = S("f_football", -2, "18:00");
+    x = S("f_football", -2, "12:00");
     scen.am4 = completed(mk("f_football", x.start, x.end, "u_ahmed", ["u_ali", "u_hamza", "u_amr", "u_belal", "u_eyad"], before(x.start, 49)));
-    const y = S("f_football", -2, "19:00");
+    const y = S("f_football", -2, "13:00");
     const others = pool.filter((u) => canPlace(u.id, y.start.getTime(), y.end.getTime(), facById.get("f_football")!)).slice(60, 65).map((u) => u.id);
     scen.am5 = completed(mk("f_football", y.start, y.end, "u_mohamed", ["u_moaz", ...others], before(y.start, 47)));
   }
@@ -326,19 +327,19 @@ export function createSeed(anchorISO: string): DbState {
     scen.r1 = noShow(mk("f_pingpong", x.start, x.end, "u_rana", [], before(x.start, 20)));
     x = S("f_billiards", openDayFrom("f_billiards", -9), "12:15");
     scen.r2 = noShow(mk("f_billiards", x.start, x.end, "u_rana", [], before(x.start, 30)));
-    x = S("f_airhockey", openDayFrom("f_airhockey", -4), "18:00");
+    x = S("f_airhockey", openDayFrom("f_airhockey", -4), "14:40");
     scen.r3 = noShow(mk("f_airhockey", x.start, x.end, "u_rana", [], before(x.start, 22)));
     x = S("f_pingpong", openDayFrom("f_pingpong", -7), "13:00");
     completed(mk("f_pingpong", x.start, x.end, "u_rana", [], before(x.start, 40)));
     x = S("f_billiards", openDayFrom("f_billiards", -11), "11:30");
     scen.n1 = noShow(mk("f_billiards", x.start, x.end, "u_nadine", [], before(x.start, 50)));
-    x = S("f_airhockey", openDayFrom("f_airhockey", -3), "17:00");
+    x = S("f_airhockey", openDayFrom("f_airhockey", -3), "14:20");
     scen.n2 = noShow(mk("f_airhockey", x.start, x.end, "u_nadine", [], before(x.start, 5)));
     x = S("f_pingpong", openDayFrom("f_pingpong", -5), "14:00");
     completed(mk("f_pingpong", x.start, x.end, "u_nadine", [], before(x.start, 20)));
     // Hana: repeated late cancellations on padel.
     for (const d of [-12, -6, -2]) {
-      const p = S("f_padel", d, "18:30");
+      const p = S("f_padel", d, "13:30");
       const b = mk("f_padel", p.start, p.end, "u_hana", ["u_farida"], before(p.start, 30));
       cancel(b, before(p.start, 1 + rng()), "u_hana", pick(rng, ["Can’t make it", "Exam moved", "Partner cancelled"]));
       scen[`h${d}`] = b;
@@ -360,9 +361,9 @@ export function createSeed(anchorISO: string): DbState {
       .map((u) => u.id);
   let offerEntry: WaitlistEntry;
   {
-    // Padel D+2 20:00: both courts full, Yehia is #3 in the queue.
+    // Padel D+2 13:30: both courts full, Yehia is #3 in the queue.
     const padel = facById.get("f_padel")!;
-    const x = S("f_padel", 2, "20:00");
+    const x = S("f_padel", 2, "13:30");
     let g = freeStudents(padel, x.start, x.end, 4, 120);
     mk("f_padel", x.start, x.end, g[0], g.slice(1), A - 30 * HOUR);
     g = freeStudents(padel, x.start, x.end, 2, 150);
@@ -372,9 +373,9 @@ export function createSeed(anchorISO: string): DbState {
     wl("f_padel", x.start, x.end, q[1], A - 24 * HOUR);
     wl("f_padel", x.start, x.end, Y, A - 19 * HOUR - 55 * MIN);
 
-    // Tennis D+1 20:00: the court was just freed and offered to Yehia.
+    // Tennis D+1 14:00: the court was just freed and offered to Yehia.
     const tennis = facById.get("f_tennis")!;
-    const t = S("f_tennis", 1, "20:00");
+    const t = S("f_tennis", 1, "14:00");
     const hana = mk("f_tennis", t.start, t.end, "u_hana", ["u_farida"], A - 29 * HOUR);
     cancel(hana, A - 7 * MIN, "u_hana", "Exam moved to tomorrow evening");
     scen.hanaTennis = hana;
@@ -405,7 +406,7 @@ export function createSeed(anchorISO: string): DbState {
     for (const s of fs.slice(0, 2)) {
       const sq = squads[fv.length + 3];
       const b = mk("f_football", s.start, s.end, sq[0], sq.slice(1, 7), before(s.start, 40));
-      cancel(b, new Date(mtFoot.createdAt).getTime(), "u_staff_karim", "Facility closed: floodlight failure", "staff");
+      cancel(b, new Date(mtFoot.createdAt).getTime(), "u_staff_karim", "Facility closed: goal net repair", "staff");
       fv.push(b);
     }
     maintenanceVictims.set(mtFoot, fv);
@@ -590,7 +591,7 @@ export function createSeed(anchorISO: string): DbState {
   /* ─────────────────────── Issues ─────────────────────── */
   const issues: FacilityIssue[] = [
     { id: "IS-412", facilityId: "f_airhockey", reportedBy: "u_staff_mona", category: "equipment", severity: "medium", description: "Blower fan weak on the left side — the puck slows down. Technician requested.", createdAt: iso(A - 19 * HOUR), status: "open" },
-    { id: "IS-409", facilityId: "f_football", reportedBy: "u_staff_karim", category: "lighting", severity: "high", description: "North-side floodlight bank flickering after 20:00. Electrician requested; evening sessions may be closed at short notice.", createdAt: new Date(mtFoot.createdAt).toISOString(), status: "in_progress" },
+    { id: "IS-409", facilityId: "f_football", reportedBy: "u_staff_karim", category: "equipment", severity: "high", description: "North goal net torn along the crossbar. Repair requested; afternoon sessions may be closed at short notice.", createdAt: new Date(mtFoot.createdAt).toISOString(), status: "in_progress" },
     { id: "IS-414", facilityId: "f_pingpong", reportedBy: "u_staff_mona", category: "equipment", severity: "low", description: "Table 2 — net clamp loose on one side.", createdAt: iso(A - 3 * HOUR), status: "open" },
     { id: "IS-411", facilityId: "f_billiards", reportedBy: "u_staff_mona", category: "equipment", severity: "medium", description: "Three cues have worn tips. Replacements ordered.", createdAt: iso(A - 2 * 24 * HOUR), status: "open" },
     { id: "IS-405", facilityId: "f_padel", reportedBy: "u_staff_karim", category: "safety", severity: "low", description: "Court 2 glass door not latching properly.", createdAt: iso(A - 8 * 24 * HOUR), status: "resolved", resolvedAt: iso(A - 7 * 24 * HOUR), resolvedBy: "u_staff_karim" },
@@ -609,8 +610,8 @@ export function createSeed(anchorISO: string): DbState {
   note(Y, "booking_cancelled", "Tennis Court booking cancelled", `${fmtS(scen.y6)} — cancelled in time, no strike recorded.`, new Date(scen.y6.cancellation!.at).getTime(), true, { data: { bookingId: scen.y6.id } });
   note(Y, "noshow_warning", "Missed session: Ping-Pong Tables", `You didn’t check in for ${fmtS(scen.y5)}. This is your first missed session — at 3, booking is paused for 14 days. Strikes expire after 60 days.`, new Date(scen.y5.noShow!.at).getTime(), true, { link: "/profile" });
   // Staff & admin
-  note("u_staff_mona", "maintenance", "Billiards table closure scheduled", `${format(new Date(mtBilliards.start), "EEE d MMM")} 12:00–16:00 — table re-felting. 3 bookings were cancelled and students notified.`, new Date(mtBilliards.createdAt).getTime(), true);
-  note("u_staff_karim", "booking_reminder", "Evening peak starts at 17:00", "The football pitch and both padel courts are fully booked tonight.", A - 2 * HOUR, false);
+  note("u_staff_mona", "maintenance", "Billiards table closure scheduled", `${format(new Date(mtBilliards.start), "EEE d MMM")} 11:00–13:00 — table re-felting. 3 bookings were cancelled and students notified.`, new Date(mtBilliards.createdAt).getTime(), true);
+  note("u_staff_karim", "booking_reminder", "Busiest hours start at 12:00", "The football pitch and both padel courts are fully booked this afternoon.", A - 2 * HOUR, false);
   note("u_admin_nour", "fairness_notice", "New fair-use flag on the Football Pitch", "Ahmed Hassan and Mohamed Tarek held back-to-back sessions. Review in Fair use.", new Date(flags[0].createdAt).getTime(), false, { link: "/admin/fairness" });
   note("u_admin_nour", "maintenance", "Issue reported: Air Hockey Table", "Blower fan weak on the left side. Reported by Mona Saleh.", A - 19 * HOUR, true, { link: "/admin/facilities" });
   for (const id of ["u_super_tamer", "u_admin_dina"]) note(id, "fairness_notice", "New fair-use flag on the Football Pitch", "Ahmed Hassan and Mohamed Tarek held back-to-back sessions.", new Date(flags[0].createdAt).getTime(), false, { link: "/admin/fairness" });
@@ -643,7 +644,7 @@ export function createSeed(anchorISO: string): DbState {
     log(new Date(b.cancellation!.at).getTime(), b.cancellation!.byUserId, "booking.cancel", "booking", b.id, b.id, `Cancelled ${facById.get(b.facilityId)!.name}, ${fmtS(b)}${b.cancellation!.late ? " (late)" : ""}`);
   }
   log(new Date(mtBilliards.createdAt).getTime(), "u_admin_nour", "maintenance.create", "maintenance", mtBilliards.id, "Billiards Table", `Scheduled maintenance ${format(new Date(mtBilliards.start), "d MMM HH:mm")}–${format(new Date(mtBilliards.end), "HH:mm")}: table re-felting. 3 bookings cancelled, students notified.`);
-  log(new Date(mtFoot.createdAt).getTime(), "u_staff_karim", "facility.close_temporarily", "maintenance", mtFoot.id, "Football Pitch", "Closed the pitch 20:00–22:00 — floodlight failure. 2 bookings cancelled without penalty.");
+  log(new Date(mtFoot.createdAt).getTime(), "u_staff_karim", "facility.close_temporarily", "maintenance", mtFoot.id, "Football Pitch", "Closed the pitch 13:00–15:00 — torn goal net. 2 bookings cancelled without penalty.");
   log(new Date(issues[0].createdAt).getTime(), "u_staff_mona", "issue.report", "issue", "IS-412", "Air Hockey Table", "Reported: blower fan weak (medium)");
   log(new Date(issues[2].createdAt).getTime(), "u_staff_mona", "issue.report", "issue", "IS-414", "Ping-Pong Tables", "Reported: table 2 net clamp loose (low)");
   log(new Date(restrictions[0].start).getTime(), "system", "restriction.create", "restriction", restrictions[0].id, "Rana Essam", "Booking paused for 14 days — reached 3 missed sessions");
@@ -711,6 +712,14 @@ export function createSeed(anchorISO: string): DbState {
     devices: [],
     deviceRequests: [],
     credentials: [],
+    pushSubscriptions: [],
+    // The official student list: every demo student, plus two who haven't made an account yet and one graduate — to try registering with.
+    roster: [
+      ...users.filter((u) => u.role === "student" && u.universityId).map((u) => ({ id: u.universityId!, name: u.name, nameAr: u.nameAr, email: u.email.toLowerCase(), faculty: u.faculty, year: u.year, level: u.audience === "postgraduate" ? ("postgraduate" as const) : ("undergraduate" as const) })),
+      { id: "20260001", name: "Laila Mostafa", nameAr: "ليلى مصطفى", faculty: "Engineering", year: 1, level: "undergraduate" as const },
+      { id: "20260002", name: "Tarek Nabil", nameAr: "طارق نبيل", faculty: "Business Administration", year: 1, level: "undergraduate" as const },
+      { id: "20220003", name: "Salma Fathy", nameAr: "سلمى فتحي", faculty: "Pharmacy", year: 4, level: "undergraduate" as const, status: "inactive" as const },
+    ],
     dailyStats,
   };
 }

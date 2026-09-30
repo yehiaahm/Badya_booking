@@ -64,6 +64,8 @@ export const N = {
   item: noun(["item", "items"], ["عنصر واحد", "عنصرين", "عناصر", "عنصرًا"]),
   week: noun(["week", "weeks"], ["أسبوع واحد", "أسبوعين", "أسابيع", "أسبوعًا"]),
   spot: noun(["spot", "spots"], ["مكان واحد", "مكانين", "أماكن", "مكانًا"]),
+  line: noun(["line", "lines"], ["سطر واحد", "سطرين", "أسطر", "سطرًا"]),
+  account: noun(["account", "accounts"], ["حساب واحد", "حسابين", "حسابات", "حسابًا"]),
 };
 
 /** The noun alone, when the number sits beside it (steppers): word(3, ["person", "people"], ["شخص", "أشخاص", "شخصًا"]). */
