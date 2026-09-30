@@ -54,7 +54,7 @@ export default function DashboardPage() {
         )}
       </div>
 
-      <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+      <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <div className="space-y-6">
           {!d ? (
             <Skeleton className="h-72 rounded-[20px]" />

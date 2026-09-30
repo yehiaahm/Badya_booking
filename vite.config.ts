@@ -25,6 +25,8 @@ export default defineConfig({
           if (id.includes("@tanstack")) return "query";
           if (id.includes("lucide-react")) return "icons";
           if (id.includes("date-fns")) return "dates";
+          // Only the staff scanner needs the QR decoder — loaded when it is.
+          if (id.includes("jsqr")) return "jsqr";
           return "vendor";
         },
       },

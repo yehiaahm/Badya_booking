@@ -14,8 +14,10 @@ import type {
   FairnessFlag,
   Favorite,
   MaintenancePeriod,
+  PushSubscriptionRecord,
   Restriction,
   Role,
+  RosterEntry,
   SystemSettings,
   User,
   WaitlistEntry,
@@ -24,7 +26,7 @@ import type {
 /** The mock backend's database. Row tables are keyed by `id`. */
 export interface DbState {
   /** anchor: when the database was created. demo: filled with generated sample data. */
-  meta: { anchor: string; bookingSeq: number; seq: number; demo?: boolean };
+  meta: { anchor: string; bookingSeq: number; seq: number; demo?: boolean; rosterUpdatedAt?: string };
   settings: SystemSettings;
   globalPolicy: BookingPolicy;
   roles: Role[];
@@ -44,11 +46,14 @@ export interface DbState {
   devices: Device[];
   deviceRequests: DeviceRequest[];
   credentials: Credential[];
+  pushSubscriptions: PushSubscriptionRecord[];
+  /** The official student list. Empty when none has been uploaded. */
+  roster: RosterEntry[];
   /** Pre-aggregated history older than the live booking records. Never patched. */
   dailyStats: DailyStat[];
 }
 
-export const ROW_TABLES = ["users", "categories", "facilities", "bookings", "waitlist", "maintenance", "issues", "restrictions", "flags", "notifications", "audit", "favorites", "sessions", "devices", "deviceRequests", "credentials"] as const;
+export const ROW_TABLES = ["users", "categories", "facilities", "bookings", "waitlist", "maintenance", "issues", "restrictions", "flags", "notifications", "audit", "favorites", "sessions", "devices", "deviceRequests", "credentials", "pushSubscriptions", "roster"] as const;
 export type RowTable = (typeof ROW_TABLES)[number];
 export const SINGLETONS = ["meta", "settings", "globalPolicy", "roles", "dailyStats"] as const;
 export type Singleton = (typeof SINGLETONS)[number];

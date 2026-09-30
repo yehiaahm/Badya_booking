@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "@/api";
-import { errorMessage } from "@/lib/queries";
+import { errorMessage, queryClient } from "@/lib/queries";
 import { Dialog } from "@/components/ui/Overlay";
 import { Button } from "@/components/ui/Button";
 import { Field, Input } from "@/components/ui/Form";
@@ -26,7 +26,11 @@ export function ChangePasswordDialog({ open, onClose, required }: { open: boolea
     onSuccess: () => {
       toast.success(t("Password changed"), t("Use it the next time you sign in."));
       const user = useSession.getState().user;
-      if (user?.mustChangePassword) useSession.getState().setUser({ ...user, mustChangePassword: false });
+      if (user?.mustChangePassword) {
+        useSession.getState().setUser({ ...user, mustChangePassword: false });
+        // The server held everything else back until now — load the screens behind the dialog.
+        void queryClient.invalidateQueries();
+      }
       onClose();
     },
     onError: (e) => setError(errorMessage(e)),

@@ -1,11 +1,11 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { motion } from "motion/react";
-import { ArrowRight, CalendarDays, Clock, Compass, Heart, MapPin, QrCode, Search, ShieldAlert, Sparkles, Ticket } from "lucide-react";
+import { ArrowRight, Ban, CalendarDays, Clock, Compass, Heart, MapPin, QrCode, Search, ShieldAlert, Sparkles, Ticket } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { useNow } from "@/lib/hooks";
 import { useCategories, useFacilities, useMyBookings, useMyWaitlist, useStanding } from "@/lib/queries";
-import { countdown, dayKey, fmtRange, fmtRelative, greeting, relDay } from "@/lib/time";
+import { countdown, dayKey, fmtRange, fmtRelative, fmtTime, greeting, relDay } from "@/lib/time";
 import { useSession } from "@/state/session";
 import { BRAND_ASSETS } from "@/components/brand/Brand";
 import { FacilityArt } from "@/components/facility/FacilityArt";
@@ -15,8 +15,10 @@ import { StatusBadge } from "@/components/booking/status";
 import { Button } from "@/components/ui/Button";
 import { EmptyState, ErrorState, SectionTitle, Skeleton } from "@/components/ui/Primitives";
 import { NotificationBell } from "@/components/shell/Notifications";
+import { PushPrompt } from "@/components/shell/PushCard";
+import { Invitations } from "@/components/booking/Invitations";
 import type { BookingView } from "@/api";
-import { L, arCount, t } from "@/i18n";
+import { L, arCount, currentLanguage, t } from "@/i18n";
 
 function UpNext({ b, more, onQr }: { b: BookingView; more: number; onQr: () => void }) {
   const now = useNow(1000);
@@ -36,24 +38,32 @@ function UpNext({ b, more, onQr }: { b: BookingView; more: number; onQr: () => v
           <StatusBadge status={b.status} size="xs" className="bg-surface/95" />
         </div>
       </div>
-      <div className="grid gap-4 p-5 sm:grid-cols-[1fr_auto] sm:items-center">
+      <div className="grid grid-cols-1 gap-4 p-5 sm:grid-cols-[1fr_auto] sm:items-center">
         <div>
           <p className="flex items-center gap-2 text-[15px] font-bold text-ink tabular">
             <CalendarDays className="size-4 text-muted" />
-            {relDay(b.start, now)}, {fmtRange(b.start, b.end)}
+            {relDay(b.start, now)}{L(", ", "، ")}{fmtRange(b.start, b.end)}
           </p>
           <p className="mt-1 flex items-center gap-2 text-sm text-muted">
             <MapPin className="size-4" /> {whereLabel(b)}
           </p>
-          {!live && ms > 0 && (
-            <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-brand-soft px-3 py-1 text-xs font-bold text-brand-strong">
+          {b.status === "AWAITING_PLAYERS" ? (
+            <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-warning-soft px-3 py-1 text-xs font-bold text-warning">
               <Clock className="size-3.5" />
-              {ms < 3 * 3600000 ? <span className="tabular">{t("Starts in")}{" "}{countdown(ms)}</span> : t("Starts {when}", { when: fmtRelative(b.start, now) })}
+              {b.playersDeadline ? t("Waiting for {n} more to accept · until {time}", { n: b.playersNeeded, time: fmtTime(b.playersDeadline) }) : t("Waiting for players")}
             </p>
+          ) : (
+            !live &&
+            ms > 0 && (
+              <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-brand-soft px-3 py-1 text-xs font-bold text-brand-strong">
+                <Clock className="size-3.5" />
+                {ms < 3 * 3600000 ? <span className="tabular">{t("Starts in")}{" "}{countdown(ms)}</span> : t("Starts {when}", { when: fmtRelative(b.start, now) })}
+              </p>
+            )
           )}
         </div>
         <div className="flex gap-2">
-          {b.status !== "PENDING" && b.relation === "booker" && (
+          {(b.status === "CONFIRMED" || b.status === "CHECKED_IN") && b.relation === "booker" && (
             <Button onClick={onQr} icon={<QrCode className="size-4" />}>
               {t("Show QR")}
             </Button>
@@ -85,10 +95,13 @@ export function HomePage() {
   const qr = useQrSheet();
   const [cat, setCat] = useState<string>("all");
 
-  const upcoming = useMemo(() => (bookings.data ?? []).filter((b) => (b.status === "CONFIRMED" || b.status === "PENDING" || b.status === "CHECKED_IN") && new Date(b.end) > now).sort((a, b) => a.start.localeCompare(b.start)), [bookings.data, now]);
+  const upcoming = useMemo(() => (bookings.data ?? []).filter((b) => b.relation !== "invited" && (b.status === "CONFIRMED" || b.status === "PENDING" || b.status === "AWAITING_PLAYERS" || b.status === "CHECKED_IN") && new Date(b.end) > now).sort((a, b) => a.start.localeCompare(b.start)), [bookings.data, now]);
+  const invites = useMemo(() => (bookings.data ?? []).filter((b) => b.relation === "invited" && new Date(b.start) > now), [bookings.data, now]);
   const offer = (waitlist.data ?? []).find((w) => w.entry.status === "offered" && w.entry.offerExpiresAt && new Date(w.entry.offerExpiresAt) > now);
   const railed = (facilities.data ?? []).filter((f) => f.facility.status === "active" && (cat === "all" || f.category.id === cat));
-  const popular = [...(facilities.data ?? [])].filter((f) => f.facility.status === "active").sort((a, b) => b.utilization7d - a.utilization7d).slice(0, 4);
+  // Only facilities people have actually booked — a new campus has nothing to rank yet.
+  const popular = [...(facilities.data ?? [])].filter((f) => f.facility.status === "active" && f.utilization7d > 0).sort((a, b) => b.utilization7d - a.utilization7d).slice(0, 4);
+  const firstName = (currentLanguage() === "ar" && user.nameAr ? user.nameAr : user.name).split(" ")[0];
   const level = standing.data?.standing.level;
 
   const submit = (e: FormEvent) => {
@@ -110,7 +123,7 @@ export function HomePage() {
             </div>
           </div>
           <h1 className="mt-4 font-display text-[40px] leading-[1] sm:text-6xl">
-            {greeting(now)}{L(", ", "، ")}{user.name.split(" ")[0]} <span className="not-italic">👋</span>
+            {greeting(now)}{L(", ", "، ")}{firstName} <span className="not-italic">👋</span>
           </h1>
           <p className="mt-2 text-[15px] text-white/75 sm:text-lg">{t("Find your next activity.")}</p>
           <form onSubmit={submit} className="mt-6 flex max-w-xl items-center gap-2 rounded-2xl bg-white/12 p-1.5 ring-1 ring-white/20 backdrop-blur-md focus-within:ring-white/50" role="search">
@@ -137,7 +150,7 @@ export function HomePage() {
           <span className="min-w-0 flex-1">
             <span className="block text-[15px] font-bold">{t("A spot opened on")}{" "}{offer.facility.name}</span>
             <span className="block text-[13px] text-on-brand/80">
-              {relDay(offer.entry.start, now)}, {fmtRange(offer.entry.start, offer.entry.end)}{" "}{t("· held for you")}{" "}<span className="font-bold tabular">{countdown(new Date(offer.entry.offerExpiresAt!).getTime() - now.getTime())}</span>
+              {relDay(offer.entry.start, now)}{L(", ", "، ")}{fmtRange(offer.entry.start, offer.entry.end)}{" "}{t("· held for you")}{" "}<span className="font-bold tabular">{countdown(new Date(offer.entry.offerExpiresAt!).getTime() - now.getTime())}</span>
             </span>
           </span>
           <span className="hidden shrink-0 rounded-xl bg-white px-3.5 py-2 text-sm font-bold text-brand-strong sm:block">{t("Claim")}</span>
@@ -145,7 +158,20 @@ export function HomePage() {
         </motion.button>
       )}
 
-      {level && level !== "good" && (
+      <Invitations bookings={invites} />
+
+      <PushPrompt />
+
+      {standing.data?.suspended ? (
+        <div role="status" className="mt-4 flex items-start gap-3 rounded-2xl border border-danger/25 bg-danger-soft p-3.5 text-sm">
+          <Ban className="mt-0.5 size-5 shrink-0 text-danger" />
+          <span className="flex-1 text-ink-2">
+            <span className="block font-bold text-ink">{t("Your account is suspended.")}</span>
+            {standing.data.suspended.reason && <span className="block">{standing.data.suspended.reason}</span>}
+            <span className="mt-0.5 block text-xs text-muted">{t("You can still see and cancel your bookings. Contact the facilities office to book again.")}</span>
+          </span>
+        </div>
+      ) : level && level !== "good" && (
         <Link to="/profile" className={cn("mt-4 flex items-center gap-3 rounded-2xl border p-3.5 text-sm", level === "restricted" ? "border-danger/25 bg-danger-soft" : "border-warning/25 bg-warning-soft")}>
           <ShieldAlert className={cn("size-5 shrink-0", level === "restricted" ? "text-danger" : "text-warning")} />
           <span className="flex-1 text-ink-2">
@@ -163,7 +189,7 @@ export function HomePage() {
         </Link>
       )}
 
-      <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+      <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
         {/* Up next */}
         <section aria-labelledby="upnext">
           <SectionTitle title={<span id="upnext">{t("Your next booking")}</span>} action={<Link to="/bookings" className="text-sm font-semibold text-brand hover:underline">{t("All bookings")}</Link>} />
@@ -229,12 +255,14 @@ export function HomePage() {
       </section>
 
       {/* Popular */}
-      <section className="mt-6" aria-labelledby="popular">
-        <SectionTitle title={<span id="popular">{t("Popular this week")}</span>} subtitle={t("Most-booked facilities — book early for evenings.")} />
-        <div className="grid gap-3 sm:grid-cols-2">
-          {!facilities.data ? Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-[88px]" />) : popular.map((f) => <FacilityCard key={f.facility.id} s={f} variant="row" />)}
-        </div>
-      </section>
+      {(!facilities.data || popular.length > 0) && (
+        <section className="mt-6" aria-labelledby="popular">
+          <SectionTitle title={<span id="popular">{t("Popular this week")}</span>} subtitle={t("Most-booked facilities — book early to get the time you want.")} />
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {!facilities.data ? Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-[88px]" />) : popular.map((f) => <FacilityCard key={f.facility.id} s={f} variant="row" />)}
+          </div>
+        </section>
+      )}
       {qr.sheet}
     </div>
   );

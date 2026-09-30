@@ -1,10 +1,11 @@
 import { addDays, format, startOfDay } from "date-fns";
 import { clock, fmtDayShort, fmtRange } from "@/lib/time";
-import { computeStanding, evaluateBooking, findSession, UPCOMING_STATUSES, type Evaluation } from "@/domain/engine";
+import { computeStanding, evaluateBooking, findSession, playersOf, UPCOMING_STATUSES, type Evaluation } from "@/domain/engine";
 import { countOverrides } from "@/domain/policy";
 import { facilityName } from "@/domain/localize";
 import { L, N, withLanguage } from "@/i18n/lang";
-import type { Booking, BookingPolicy, Facility, FacilityCategory, PolicyOverride, Permission, Restriction, RoleKey, SystemSettings, User } from "@/domain/types";
+import { tStored } from "@/i18n";
+import type { Booking, BookingPolicy, CorrectableField, Facility, FacilityCategory, PolicyOverride, Permission, Restriction, RoleKey, RosterEntry, SystemSettings, User, WaitlistEntry } from "@/domain/types";
 import {
   ApiError,
   type AdminDashboard,
@@ -17,17 +18,22 @@ import {
   type ImpactPreview,
   type MaintenanceView,
   type Page,
+  type RosterImportReport,
+  type RosterSummary,
   type StudentDetail,
   type StudentRow,
   type TeamMember,
   type WaitlistSessionView,
 } from "@/api/types";
-import { audit, bookingOrThrow, currentUser, engine, facilityOrThrow, notify, offerNext, requirePermission, tick, toPublic, toView, updateBooking } from "./core";
+import { audit, bookingOrThrow, currentUser, engine, facilityOrThrow, hasPermission, liftAutoRestrictionIfCleared, nationalIdCheck, notify, offerNext, requirePermission, rosterIndex, tick, toPublic, toView, updateBooking } from "./core";
 import { db } from "./db";
 import { dayStat, utilization } from "./metrics";
-import { closeWindow } from "./staff";
-import { standingInfo, summarize } from "./student";
-import { decideDeviceRequest, domainAllowed, resetDevices, setTemporaryPassword } from "./auth";
+import { closeWindow, releaseForClosure } from "./staff";
+import { config } from "../config";
+import { releaseStudent, standingInfo, summarize } from "./student";
+import { clearRegistrationLocks, decideDeviceRequest, domainAllowed, resetDevices, setTemporaryPassword, signOutEverywhere } from "./auth";
+import { FACULTIES } from "./seed/catalog";
+import { checkRoster, westernDigits } from "@/lib/roster";
 
 const label = (b: { start: string; end: string }) => `${fmtDayShort(b.start)}${L(", ", "، ")}${fmtRange(b.start, b.end)}`;
 const ISSUE_AR: Record<string, string> = { equipment: "معدات", cleanliness: "نظافة", safety: "سلامة", lighting: "إضاءة", surface: "أرضية", access: "دخول", other: "آخر" };
@@ -39,6 +45,155 @@ const pct = (n: number) => Math.round(n * 1000) / 10;
 function paginate<T>(rows: T[], page = 1, pageSize = 25): Page<T> {
   const p = Math.max(1, page);
   return { rows: rows.slice((p - 1) * pageSize, p * pageSize), total: rows.length, page: p, pageSize };
+}
+
+/**
+ * Upcoming bookings (and waitlist places) a facility's new setup has no room
+ * for: their session no longer exists or has a different length, or they're
+ * on a space that's gone. In a shared space the earliest bookings keep their places.
+ */
+function outOfPlan(f: Facility, now: Date): { bookings: Booking[]; waits: WaitlistEntry[] } {
+  const fits = (x: { start: string; end: string }) => findSession(f, x.start)?.end.getTime() === new Date(x.end).getTime();
+  const perSession = new Map<string, number>();
+  const bookings = db.state.bookings
+    .filter((b) => b.facilityId === f.id && UPCOMING_STATUSES.has(b.status) && new Date(b.start) > now)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .filter((b) => {
+      if (!fits(b)) return true;
+      if (f.mode === "exclusive") return b.unitIndex >= f.units;
+      const n = (perSession.get(b.start) ?? 0) + 1;
+      perSession.set(b.start, n);
+      return n > f.units;
+    });
+  const waits = db.state.waitlist.filter((w) => w.facilityId === f.id && (w.status === "waiting" || w.status === "offered") && new Date(w.start) > now && !fits(w));
+  return { bookings, waits };
+}
+
+/** Anything refers to this facility — bookings, waitlists, closures, issues, fair-use flags — so deleting it would break history. */
+function facilityInUse(id: string): boolean {
+  const s = db.state;
+  return s.bookings.some((b) => b.facilityId === id) || s.waitlist.some((w) => w.facilityId === id) || s.maintenance.some((m) => m.facilityId === id) || s.issues.some((i) => i.facilityId === id) || s.flags.some((f) => f.facilityId === id);
+}
+
+/** A student account with the official list's details — except anything an administrator corrected by hand. */
+function withOfficialDetails(u: User, e: RosterEntry): User {
+  return {
+    ...u,
+    name: e.name ?? u.name,
+    nameAr: e.nameAr ?? u.nameAr,
+    faculty: u.overrides?.faculty ? u.faculty : (e.faculty ?? u.faculty),
+    year: u.overrides?.year ? u.year : (e.year ?? u.year),
+    audience: e.level ?? u.audience,
+  };
+}
+
+/** A student's official-list entry (never the national-ID check) and where each correctable detail comes from. */
+function officialView(u: User): Pick<StudentDetail, "official" | "provenance" | "corrections"> {
+  const e = u.universityId ? rosterIndex()?.get(u.universityId) : undefined;
+  const from = (f: CorrectableField) => (u.overrides?.[f] ? "office" : e?.[f] !== undefined ? "official" : "student");
+  return {
+    official: e ? { name: e.name, nameAr: e.nameAr, email: e.email, faculty: e.faculty, year: e.year, level: e.level, status: e.status ?? "active", idCheck: !!e.idCheck } : undefined,
+    provenance: { faculty: from("faculty"), year: from("year") },
+    corrections: (Object.entries(u.overrides ?? {}) as [CorrectableField, { at: string; byUserId: string }][]).map(([field, o]) => ({ field, at: o.at, byName: db.state.users.find((x) => x.id === o.byUserId)?.name })),
+  };
+}
+
+const studentOrThrow = (id: string): User => {
+  const u = db.state.users.find((x) => x.id === id && x.role === "student");
+  if (!u) throw new ApiError("NOT_FOUND", "Student not found.");
+  return u;
+};
+
+/** Students who can hold an account: everyone but closed accounts. */
+const liveStudents = () => db.state.users.filter((u) => u.role === "student" && u.status !== "deactivated");
+
+/**
+ * What loading this file would do: the entries to store (national-ID digits
+ * reduced to a keyed hash), the accounts whose details change, and a report.
+ */
+function planRoster(csv: string): { report: RosterImportReport; entries: RosterEntry[]; accounts: User[] } {
+  const checked = checkRoster(csv, { faculties: FACULTIES, domains: db.state.settings.allowedEmailDomains });
+  const entries: RosterEntry[] = checked.rows.map((r) => ({ id: r.id, name: r.name, nameAr: r.nameAr, email: r.email, faculty: r.faculty, year: r.year, level: r.level, status: r.status === "inactive" ? "inactive" : undefined, idCheck: r.nationalId ? nationalIdCheck(r.id, r.nationalId) : undefined }));
+  const current = new Map(db.state.roster.map((r) => [r.id, r]));
+  let added = 0;
+  let updated = 0;
+  for (const e of entries) {
+    const c = current.get(e.id);
+    if (!c) added++;
+    else if (JSON.stringify(c) !== JSON.stringify(e)) updated++;
+  }
+  const byId = new Map(entries.map((e) => [e.id, e]));
+  const accounts: User[] = [];
+  const a = { matched: 0, updated: 0, keptCorrections: 0, outside: 0, inactive: 0, mismatched: 0 };
+  for (const u of liveStudents()) {
+    const e = u.universityId ? byId.get(u.universityId) : undefined;
+    if (!e) {
+      a.outside++;
+      continue;
+    }
+    a.matched++;
+    if (e.status === "inactive") a.inactive++;
+    if (e.email && e.email !== u.email.toLowerCase()) a.mismatched++;
+    if ((u.overrides?.faculty && e.faculty && e.faculty !== u.faculty) || (u.overrides?.year && e.year && e.year !== u.year)) a.keptCorrections++;
+    const next = withOfficialDetails(u, e);
+    if (JSON.stringify(next) !== JSON.stringify(u)) accounts.push(next);
+  }
+  a.updated = accounts.length;
+  const duplicates = checked.problems.filter((p) => p.duplicate).length;
+  return {
+    entries,
+    accounts,
+    report: {
+      rows: entries.length,
+      added,
+      updated,
+      unchanged: entries.length - added - updated,
+      removed: [...current.keys()].filter((id) => !byId.has(id)).length,
+      blank: checked.blank,
+      invalid: checked.problems.length - duplicates,
+      duplicates,
+      inactive: entries.filter((e) => e.status === "inactive").length,
+      withIdCheck: entries.filter((e) => e.idCheck).length,
+      withEmail: entries.filter((e) => e.email).length,
+      accounts: a,
+      sample: entries.slice(0, 5).map(({ idCheck: _, ...e }) => e),
+      problems: checked.problems.slice(0, 100),
+      problemCount: checked.problems.length,
+      applied: false,
+    },
+  };
+}
+
+function rosterSummary(): RosterSummary {
+  const index = rosterIndex();
+  const roster = db.state.roster;
+  const students = liveStudents();
+  const entryOf = (u: User) => (index && u.universityId ? index.get(u.universityId) : undefined);
+  // Not on the list, or inactive on it: these accounts can't book or be invited.
+  const outside = index
+    ? students.filter((u) => {
+        const e = entryOf(u);
+        return !e || e.status === "inactive";
+      })
+    : [];
+  // On the list with a different email: make sure the account belongs to that student.
+  const mismatched = index
+    ? students.filter((u) => {
+        const e = entryOf(u);
+        return !!e?.email && e.email !== u.email.toLowerCase();
+      })
+    : [];
+  return {
+    count: roster.length,
+    updatedAt: db.state.meta.rosterUpdatedAt,
+    inactive: roster.filter((r) => r.status === "inactive").length,
+    withIdCheck: roster.filter((r) => r.idCheck).length,
+    registered: index ? students.filter((u) => !!entryOf(u)).length : 0,
+    outsideCount: outside.length,
+    outside: outside.slice(0, 50).map((u) => ({ ...toPublic(u), email: u.email, reason: entryOf(u) ? ("inactive" as const) : ("not_listed" as const) })),
+    mismatchCount: mismatched.length,
+    mismatched: mismatched.slice(0, 50).map((u) => ({ ...toPublic(u), email: u.email, listedEmail: entryOf(u)!.email! })),
+  };
 }
 
 function studentRow(u: User): StudentRow {
@@ -152,7 +307,7 @@ export const admin = {
 
     return {
       kpis: {
-        facilities: { active: facs.filter((f) => f.status === "active").length, total: facs.length, maintenance: s.maintenance.filter((m) => !m.cancelled && new Date(m.start) <= now && new Date(m.end) > now).length },
+        facilities: { active: facs.filter((f) => f.status === "active").length, total: facs.filter((f) => !f.archived).length, maintenance: s.maintenance.filter((m) => !m.cancelled && new Date(m.start) <= now && new Date(m.end) > now).length },
         today: { bookings: live.length, checkedIn: live.filter((b) => b.status === "CHECKED_IN" || b.status === "COMPLETED").length, upcoming: live.filter((b) => b.status === "CONFIRMED" && new Date(b.start) > now).length, cancelled: todays.filter((b) => b.status === "CANCELLED").length },
         activeNow: s.bookings.filter((b) => b.status === "CHECKED_IN").length,
         noShows: { today: todays.filter((b) => b.status === "NO_SHOW").length, rate7d: last7.noShowRate, ratePrev7d: prev7.noShowRate },
@@ -172,23 +327,40 @@ export const admin = {
 
   /* ───────────── Facilities & categories ───────────── */
   async facilities() {
-    const u = requirePermission("facility.view");
+    // The office's catalogue — closed and archived facilities, issue and booking counts — isn't for students or staff.
+    const u = currentUser();
+    const manages: Permission[] = ["facility.manage", "category.manage", "booking.manage", "maintenance.manage", "staff.manage", "settings.manage"];
+    if (!manages.some((p) => hasPermission(u, p))) throw new ApiError("FORBIDDEN", "You don’t have permission to do that. If you think you should, contact a system administrator.");
     const now = clock.now();
     return db.state.facilities.map((f) => ({
       ...summarize(f, u),
       overrides: countOverrides(f.policy),
       openIssues: db.state.issues.filter((i) => i.facilityId === f.id && i.status !== "resolved").length,
       upcomingBookings: db.state.bookings.filter((b) => b.facilityId === f.id && UPCOMING_STATUSES.has(b.status) && new Date(b.start) > now).length,
+      /** Something refers to it, so it can be archived but never deleted. */
+      hasHistory: facilityInUse(f.id),
     }));
   },
 
   async facility(id: string) {
     requirePermission("facility.manage");
     const f = facilityOrThrow(id);
-    return { facility: f, issues: db.state.issues.filter((i) => i.facilityId === id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) };
+    return {
+      facility: f,
+      issues: db.state.issues.filter((i) => i.facilityId === id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      /** Something refers to it, so it can be archived but never deleted. */
+      hasHistory: facilityInUse(id),
+      upcomingBookings: db.state.bookings.filter((b) => b.facilityId === id && UPCOMING_STATUSES.has(b.status) && new Date(b.start) > clock.now()).length,
+    };
   },
 
-  async saveFacility(input: Facility, isNew: boolean) {
+  /**
+   * Create or update a facility. When new hours, session lengths or fewer
+   * spaces leave upcoming bookings without a session, nothing is saved until
+   * the administrator confirms (`cancelAffected`); then those bookings are
+   * cancelled without a strike and everyone on them is told.
+   */
+  async saveFacility(input: Facility, isNew: boolean, cancelAffected = false) {
     const u = requirePermission("facility.manage");
     const errors: string[] = [];
     if (input.name.trim().length < 3) errors.push("Give the facility a name of at least 3 characters.");
@@ -197,14 +369,36 @@ export const admin = {
     if (!input.schedule.some(Boolean)) errors.push("Open the facility on at least one day.");
     for (const h of input.schedule) if (h && h.close <= h.open) errors.push("Closing time must be after opening time.");
     if (!input.location.building.trim()) errors.push("Add the building so students can find it.");
+    const type = db.state.categories.find((c) => c.id === input.categoryId);
+    if (!type) errors.push("Choose a facility type from the list.");
+    if (!input.id) errors.push("This facility needs an ID.");
     if (errors.length) throw new ApiError("VALIDATION", errors[0], undefined, { errors });
     return db.transaction(() => {
-      const now = clock.now().toISOString();
+      const now = clock.now();
       if (isNew && db.state.facilities.some((f) => f.id === input.id)) throw new ApiError("CONFLICT", "A facility with this ID already exists.");
       const prev = db.state.facilities.find((f) => f.id === input.id);
-      const f: Facility = { ...input, name: input.name.trim(), capacity: input.mode === "shared" ? 1 : input.capacity, createdAt: prev?.createdAt ?? now, updatedAt: now };
+      // A facility may stay in a type archived after it, but nothing new goes into one.
+      if (type?.archived && prev?.categoryId !== type.id) throw new ApiError("VALIDATION", "That facility type is archived — restore it first or choose another.");
+      const f: Facility = {
+        ...input,
+        name: input.name.trim(),
+        capacity: input.mode === "shared" ? 1 : input.capacity,
+        // Closing and reopening go through setFacilityStatus, which looks after the bookings.
+        status: prev?.status ?? input.status,
+        inactiveReason: prev ? prev.inactiveReason : input.inactiveReason,
+        // Archiving and restoring have their own actions too.
+        archived: prev?.archived,
+        createdAt: prev?.createdAt ?? now.toISOString(),
+        updatedAt: now.toISOString(),
+      };
+      const { bookings: affected, waits } = prev ? outOfPlan(f, now) : { bookings: [], waits: [] };
+      if (affected.length && !cancelAffected) {
+        const n = affected.length;
+        throw new ApiError("CONFLICT", L(`${n} upcoming ${n === 1 ? "booking doesn’t" : "bookings don’t"} fit these changes.`, `${N.booking(n)} قادمة لا تتوافق مع هذه التعديلات.`), undefined, { affected: affected.map((b) => toView(b, u.id)) });
+      }
       db.put("facilities", f);
-      audit(u, isNew ? "facility.create" : "facility.update", "facility", f.id, f.name, isNew ? `Created ${f.name} (${f.mode === "shared" ? `${f.units} ${f.unitLabel}s` : `${f.units} × ${f.unitLabel}`}, ${f.sessionMinutes}-min sessions)` : `Updated ${f.name}`);
+      if (affected.length || waits.length) releaseForClosure(u, f, affected, waits, () => L("its schedule changed", "تغيّر جدوله"), "Facility schedule changed");
+      audit(u, isNew ? "facility.create" : "facility.update", "facility", f.id, f.name, isNew ? `Created ${f.name} (${f.mode === "shared" ? `${f.units} ${f.unitLabel}s` : `${f.units} × ${f.unitLabel}`}, ${f.sessionMinutes}-min sessions)` : `Updated ${f.name}${affected.length ? ` — cancelled ${affected.length} upcoming ${affected.length === 1 ? "booking" : "bookings"} that no longer fit, students notified` : ""}`);
       return f;
     });
   },
@@ -217,17 +411,11 @@ export const admin = {
       db.put("facilities", next);
       let cancelled = 0;
       if (status === "inactive") {
-        const affected = db.state.bookings.filter((b) => b.facilityId === id && UPCOMING_STATUSES.has(b.status) && new Date(b.start) > clock.now());
-        for (const b of affected) {
-          updateBooking(b, { status: "CANCELLED", cancellation: { at: clock.now().toISOString(), byUserId: u.id, reason: `Facility closed: ${next.inactiveReason}`, late: false, penalty: false, byRole: u.role } });
-          notify(
-            b.userId,
-            "maintenance",
-            () => L(`${f.name} is closed — booking cancelled`, `${facilityName(f)} مغلق — تم إلغاء الحجز`),
-            () => L(`Your session on ${label(b)} was cancelled: ${next.inactiveReason}. No strike has been recorded.`, `تم إلغاء موعدك ${label(b)}: ${next.inactiveReason}. لم تُسجّل عليك مخالفة.`),
-          );
-          cancelled++;
-        }
+        const now = clock.now();
+        const affected = db.state.bookings.filter((b) => b.facilityId === id && UPCOMING_STATUSES.has(b.status) && new Date(b.start) > now);
+        const waits = db.state.waitlist.filter((w) => w.facilityId === id && (w.status === "waiting" || w.status === "offered") && new Date(w.start) > now);
+        releaseForClosure(u, f, affected, waits, next.inactiveReason!, `Facility closed: ${next.inactiveReason}`);
+        cancelled = affected.length;
       } else {
         const fav = db.state.favorites.filter((x) => x.facilityId === id);
         for (const x of fav) notify(x.userId, "facility_reopened", () => L(`${f.name} is open again`, `${facilityName(f)} مفتوح مرة أخرى`), () => L("Sessions are available to book now.", "المواعيد متاحة للحجز الآن."), { link: `/facility/${id}` });
@@ -241,16 +429,123 @@ export const admin = {
     const u = requirePermission("category.manage");
     if (input.name.trim().length < 3) throw new ApiError("VALIDATION", "Give the category a name of at least 3 characters.");
     return db.transaction(() => {
-      db.put("categories", { ...input, name: input.name.trim() });
+      if (isNew && db.state.categories.some((c) => c.id === input.id)) throw new ApiError("CONFLICT", "A facility type with this ID already exists.");
+      const prev = db.state.categories.find((c) => c.id === input.id);
+      // Archiving has its own actions; an edit never changes it.
+      const next: FacilityCategory = { ...input, name: input.name.trim(), archived: prev?.archived };
+      db.put("categories", next);
       audit(u, isNew ? "category.create" : "category.update", "category", input.id, input.name, isNew ? `Created facility type “${input.name}”` : `Updated facility type “${input.name}”`);
-      return input;
+      return next;
+    });
+  },
+
+  /**
+   * Retire a facility. Students and staff stop seeing it and it can't be
+   * booked; its bookings, waitlists and audit trail stay. Upcoming bookings
+   * are listed first and only cancelled once the administrator confirms.
+   */
+  async archiveFacility(id: string, reason?: string, cancelAffected = false) {
+    const me = requirePermission("facility.manage");
+    return db.transaction(() => {
+      const f = facilityOrThrow(id);
+      if (f.archived) throw new ApiError("CONFLICT", "This facility is already archived.");
+      const now = clock.now();
+      const affected = db.state.bookings.filter((b) => b.facilityId === id && UPCOMING_STATUSES.has(b.status) && new Date(b.start) > now);
+      if (affected.length && !cancelAffected) {
+        const n = affected.length;
+        throw new ApiError("CONFLICT", L(`${n} upcoming ${n === 1 ? "booking" : "bookings"} would be cancelled.`, `سيتم إلغاء ${N.booking(n)} قادمة.`), undefined, { affected: affected.map((b) => toView(b, me.id)) });
+      }
+      const waits = db.state.waitlist.filter((w) => w.facilityId === id && (w.status === "waiting" || w.status === "offered") && new Date(w.start) > now);
+      const next: Facility = { ...f, status: "inactive", archived: { at: now.toISOString(), byUserId: me.id, reason: reason?.trim() || undefined, previousStatus: f.status }, updatedAt: now.toISOString() };
+      db.put("facilities", next);
+      releaseForClosure(me, next, affected, waits, () => L("it has been retired", "تم إيقافه نهائيًا"), `Facility archived${reason?.trim() ? `: ${reason.trim()}` : ""}`);
+      audit(me, "facility.archive", "facility", id, f.name, `Archived ${f.name}${reason?.trim() ? ` — ${reason.trim()}` : ""}${affected.length ? `; ${affected.length} upcoming bookings cancelled, students told` : ""}`);
+      return { facility: next, cancelled: affected.length };
+    });
+  },
+
+  /** Bring an archived facility back as it was before (open or closed). */
+  async restoreFacility(id: string) {
+    const me = requirePermission("facility.manage");
+    return db.transaction(() => {
+      const f = facilityOrThrow(id);
+      if (!f.archived) throw new ApiError("CONFLICT", "This facility isn’t archived.");
+      if (db.state.categories.find((c) => c.id === f.categoryId)?.archived) throw new ApiError("CONFLICT", "Its facility type is archived — restore the type first.");
+      const next: Facility = { ...f, status: f.archived.previousStatus, archived: undefined, updatedAt: clock.now().toISOString() };
+      db.put("facilities", next);
+      audit(me, "facility.restore", "facility", id, f.name, `Restored ${f.name} from the archive (${next.status === "active" ? "open" : "closed"})`);
+      return next;
+    });
+  },
+
+  /** Delete a facility for good — only one nothing refers to (created by mistake). Anything with history is archived instead. */
+  async deleteFacility(id: string) {
+    const me = requirePermission("facility.manage");
+    return db.transaction(() => {
+      const f = facilityOrThrow(id);
+      if (facilityInUse(id)) throw new ApiError("CONFLICT", "This facility has bookings or other history, so it can only be archived.");
+      for (const fav of db.state.favorites) if (fav.facilityId === id) db.remove("favorites", fav.id);
+      for (const u of db.state.users) if (u.assignedFacilityIds?.includes(id)) db.put("users", { ...u, assignedFacilityIds: u.assignedFacilityIds.filter((x) => x !== id) });
+      db.remove("facilities", id);
+      audit(me, "facility.delete", "facility", id, f.name, `Deleted ${f.name}, which had no bookings or other history`);
+    });
+  },
+
+  /** Retire a facility type — once none of its facilities are live. It disappears from students and from the type list for new facilities. */
+  /** Every facility type, archived ones included, with how many facilities use it. */
+  async categories() {
+    requirePermission("facility.manage");
+    return [...db.state.categories]
+      .sort((a, b) => Number(!!a.archived) - Number(!!b.archived) || a.sortOrder - b.sortOrder)
+      .map((c) => ({ category: c, facilities: db.state.facilities.filter((f) => f.categoryId === c.id && !f.archived).length, archivedFacilities: db.state.facilities.filter((f) => f.categoryId === c.id && f.archived).length }));
+  },
+
+  async archiveCategory(id: string) {
+    const me = requirePermission("category.manage");
+    return db.transaction(() => {
+      const c = db.state.categories.find((x) => x.id === id);
+      if (!c) throw new ApiError("NOT_FOUND", "Category not found.");
+      if (c.archived) throw new ApiError("CONFLICT", "This facility type is already archived.");
+      const live = db.state.facilities.filter((f) => f.categoryId === id && !f.archived);
+      if (live.length) throw new ApiError("CONFLICT", L(`Archive or move its facilities first: ${live.map((f) => f.name).join(", ")}.`, `انقل مرافقه أو أرشفها أولًا: ${live.map((f) => facilityName(f)).join("، ")}.`));
+      // "Shown to students" is left as it was, so restoring brings the type back exactly as before.
+      const next: FacilityCategory = { ...c, archived: { at: clock.now().toISOString(), byUserId: me.id } };
+      db.put("categories", next);
+      audit(me, "category.archive", "category", id, c.name, `Archived facility type “${c.name}”`);
+      return next;
+    });
+  },
+
+  async restoreCategory(id: string) {
+    const me = requirePermission("category.manage");
+    return db.transaction(() => {
+      const c = db.state.categories.find((x) => x.id === id);
+      if (!c) throw new ApiError("NOT_FOUND", "Category not found.");
+      if (!c.archived) throw new ApiError("CONFLICT", "This facility type isn’t archived.");
+      const next: FacilityCategory = { ...c, archived: undefined };
+      db.put("categories", next);
+      audit(me, "category.restore", "category", id, c.name, `Restored facility type “${c.name}”`);
+      return next;
+    });
+  },
+
+  /** Delete a facility type no facility uses (archived ones included). */
+  async deleteCategory(id: string) {
+    const me = requirePermission("category.manage");
+    return db.transaction(() => {
+      const c = db.state.categories.find((x) => x.id === id);
+      if (!c) throw new ApiError("NOT_FOUND", "Category not found.");
+      if (db.state.facilities.some((f) => f.categoryId === id)) throw new ApiError("CONFLICT", "Facilities (including archived ones) still use this type, so it can only be archived.");
+      db.remove("categories", id);
+      audit(me, "category.delete", "category", id, c.name, `Deleted facility type “${c.name}”, which no facility used`);
     });
   },
 
   /* ───────────── Policies ───────────── */
   async policies() {
     requirePermission("policy.manage");
-    return { global: db.state.globalPolicy, categories: [...db.state.categories].sort((a, b) => a.sortOrder - b.sortOrder), facilities: db.state.facilities };
+    // Archived facilities and types have no rules worth editing.
+    return { global: db.state.globalPolicy, categories: [...db.state.categories].filter((c) => !c.archived).sort((a, b) => a.sortOrder - b.sortOrder), facilities: db.state.facilities.filter((f) => !f.archived) };
   },
 
   async updateGlobalPolicy(p: BookingPolicy, summary: string) {
@@ -321,10 +616,12 @@ export const admin = {
       const b = bookingOrThrow(id);
       if (!UPCOMING_STATUSES.has(b.status)) throw new ApiError("CONFLICT", "Only pending or confirmed bookings can be cancelled.");
       const f = facilityOrThrow(b.facilityId);
-      const next = updateBooking(b, { status: "CANCELLED", cancellation: { at: clock.now().toISOString(), byUserId: u.id, reason: reason || "Cancelled by the facilities office", late: false, penalty: false, byRole: u.role } });
-      if (notifyStudent) for (const id2 of [b.userId, ...b.participants.map((p) => p.userId)]) notify(id2, "booking_cancelled", () => L(`${f.name} booking cancelled`, `تم إلغاء حجز ${facilityName(f)}`), () => L(`The facilities office cancelled ${label(b)}: ${reason || "no reason given"}. No strike has been recorded.`, `ألغى مكتب إدارة المرافق موعد ${label(b)}${reason ? `: ${reason}` : ""}. لم تُسجّل عليك مخالفة.`), { data: { bookingId: b.id } });
+      const next = updateBooking(b, { status: "CANCELLED", playersDeadline: undefined, cancellation: { at: clock.now().toISOString(), byUserId: u.id, reason: reason || "Cancelled by the facilities office", late: false, penalty: false, byRole: u.role } });
+      const invited = b.participants.filter((p) => p.status === "invited").map((p) => p.userId);
+      if (notifyStudent) for (const id2 of [...playersOf(b), ...invited]) notify(id2, "booking_cancelled", () => L(`${f.name} booking cancelled`, `تم إلغاء حجز ${facilityName(f)}`), () => L(`The facilities office cancelled ${label(b)}: ${reason || "no reason given"}. No strike has been recorded.`, `ألغى مكتب إدارة المرافق موعد ${label(b)}${reason ? `: ${reason}` : ""}. لم تُسجّل عليك مخالفة.`), { data: { bookingId: b.id } });
       audit(u, "booking.cancel", "booking", b.id, b.id, `Cancelled ${f.name}, ${enLabel(b)} on behalf of the student — ${reason || "no reason"}`);
-      if (b.status === "CONFIRMED") offerNext(f.id, b.start);
+      // Requests waiting for approval hold a space too.
+      offerNext(f.id, b.start);
       return toView(next, u.id);
     });
   },
@@ -334,8 +631,11 @@ export const admin = {
     return db.transaction(() => {
       const b = bookingOrThrow(id);
       if (b.status !== "PENDING") throw new ApiError("CONFLICT", "This request has already been handled.");
+      // Approving now would create a booking that is already late — and an automatic no-show.
+      if (decision === "approved" && new Date(b.start) <= clock.now()) throw new ApiError("CONFLICT", "This session has already started, so the request can’t be approved.");
       const f = facilityOrThrow(b.facilityId);
       const next = updateBooking(b, { status: decision === "approved" ? "CONFIRMED" : "CANCELLED", approval: { at: clock.now().toISOString(), byUserId: u.id, decision, note }, ...(decision === "rejected" ? { cancellation: { at: clock.now().toISOString(), byUserId: u.id, reason: note || "Request declined", late: false, penalty: false, byRole: u.role } } : {}) });
+      if (decision === "rejected") offerNext(f.id, b.start);
       notify(
         b.userId,
         decision === "approved" ? "booking_approved" : "booking_rejected",
@@ -351,11 +651,13 @@ export const admin = {
   /* ───────────── Students ───────────── */
   async students(q: { q?: string; level?: string; faculty?: string; page?: number }): Promise<Page<StudentRow>> {
     requirePermission("student.manage");
-    const term = q.q?.trim().toLowerCase();
-    let rows = db.state.users.filter((u) => u.role === "student").filter((u) => !term || u.name.toLowerCase().includes(term) || u.universityId?.includes(term) || u.email.includes(term));
+    const term = q.q ? westernDigits(q.q).trim().toLowerCase() : undefined;
+    // Closed accounts only show up when asked for; suspended ones are a filter of their own too.
+    const byStatus = (u: User) => (q.level === "deactivated" ? u.status === "deactivated" : q.level === "suspended" ? u.status === "suspended" : u.status !== "deactivated");
+    let rows = db.state.users.filter((u) => u.role === "student" && byStatus(u)).filter((u) => !term || u.name.toLowerCase().includes(term) || !!u.nameAr?.includes(term) || !!u.universityId?.includes(term) || u.email.toLowerCase().includes(term));
     if (q.faculty) rows = rows.filter((u) => u.faculty === q.faculty);
     let mapped = rows.map(studentRow);
-    if (q.level) mapped = mapped.filter((r) => (q.level === "attention" ? r.level !== "good" : r.level === q.level));
+    if (q.level && q.level !== "suspended" && q.level !== "deactivated") mapped = mapped.filter((r) => (q.level === "attention" ? r.level !== "good" || r.user.status !== "active" : r.level === q.level));
     mapped.sort((a, b) => {
       const rank = { restricted: 0, final_warning: 1, warning: 2, good: 3 } as const;
       return rank[a.level] - rank[b.level] || b.activeBookings - a.activeBookings || a.user.name.localeCompare(b.user.name);
@@ -372,7 +674,7 @@ export const admin = {
     const counts = new Map<string, number>();
     for (const b of involvements) {
       if (b.status === "CANCELLED") continue;
-      for (const x of [b.userId, ...b.participants.map((p) => p.userId)]) if (x !== id) counts.set(x, (counts.get(x) ?? 0) + 1);
+      for (const x of playersOf(b)) if (x !== id) counts.set(x, (counts.get(x) ?? 0) + 1);
     }
     const users = new Map(db.state.users.map((x) => [x.id, x]));
     return {
@@ -384,6 +686,8 @@ export const admin = {
       frequentPartners: [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([uid, shared]) => ({ user: toPublic(users.get(uid)), shared })),
       devices: db.state.devices.filter((d) => d.userId === id).map((d) => ({ label: d.label, boundAt: d.boundAt, lastSeenAt: d.lastSeenAt })),
       pendingDeviceRequests: db.state.deviceRequests.filter((r) => r.userId === id && r.status === "pending").length,
+      ...officialView(u),
+      statusByName: u.statusNote ? users.get(u.statusNote.byUserId)?.name : undefined,
     };
   },
 
@@ -391,7 +695,8 @@ export const admin = {
     const me = requirePermission("student.manage");
     if (reason.trim().length < 4) throw new ApiError("VALIDATION", "Add a reason — the student will see it.");
     return db.transaction(() => {
-      const u = db.state.users.find((x) => x.id === userId)!;
+      const u = db.state.users.find((x) => x.id === userId && x.role === "student");
+      if (!u) throw new ApiError("NOT_FOUND", "Student not found.");
       const now = clock.now();
       const r: Restriction = { id: `RS-${4000 + db.nextSeq()}`, userId, reason: reason.trim(), source: "admin", start: now.toISOString(), end: addDays(now, days).toISOString(), createdBy: me.id };
       db.put("restrictions", r);
@@ -419,11 +724,168 @@ export const admin = {
     const me = requirePermission("student.manage");
     return db.transaction(() => {
       const b = bookingOrThrow(bookingId);
-      if (b.status === "NO_SHOW" && b.noShow) updateBooking(b, { noShow: { ...b.noShow, waived: { at: clock.now().toISOString(), byUserId: me.id, reason } } });
+      if (b.status === "NO_SHOW" && b.noShow && !b.noShow.waived) updateBooking(b, { noShow: { ...b.noShow, waived: { at: clock.now().toISOString(), byUserId: me.id, reason } } });
       else if (b.cancellation?.penalty) updateBooking(b, { cancellation: { ...b.cancellation, penalty: false } });
       else throw new ApiError("CONFLICT", "There’s no strike on this booking.");
       audit(me, "booking.waive_no_show", "booking", b.id, b.id, `Waived strike — ${reason}`);
       notify(b.userId, "noshow_warning", () => L("A strike was removed", "تم إلغاء مخالفة"), () => L(`The strike for ${label(b)} was removed: ${reason}.`, `تم إلغاء المخالفة الخاصة بموعد ${label(b)}: ${reason}.`), { link: "/profile" });
+      liftAutoRestrictionIfCleared(b.userId, me);
+    });
+  },
+
+  /* ───────────── Student accounts ───────────── */
+
+  /**
+   * Suspend a student. They keep read-only access — they can see, cancel and
+   * leave bookings — but can't book, join waitlists or invite anyone. Open
+   * invitations and waitlist places end now (they couldn't use them); their
+   * bookings stay unless the office chooses `releaseBookings`.
+   */
+  async suspendStudent(userId: string, reason: string, releaseBookings = false) {
+    const me = requirePermission("student.manage");
+    if (reason.trim().length < 4) throw new ApiError("VALIDATION", "Add a reason — the student will see it.");
+    return db.transaction(() => {
+      const u = studentOrThrow(userId);
+      if (u.status !== "active") throw new ApiError("CONFLICT", u.status === "suspended" ? "This account is already suspended." : "This account is closed.");
+      const why = reason.trim();
+      const next: User = { ...u, status: "suspended", statusNote: { reason: why, at: clock.now().toISOString(), byUserId: me.id } };
+      db.put("users", next);
+      const released = releaseStudent(next, me, { bookings: releaseBookings });
+      notify(u.id, "restriction", () => L("Your account is suspended", "تم إيقاف حسابك"), () => L(`${why}. You can still see and cancel your bookings, but you can’t book, join waitlists or invite anyone until the facilities office lifts the suspension.`, `${why}. يمكنك رؤية حجوزاتك وإلغاؤها، لكن لا يمكنك الحجز أو الانضمام لقوائم الانتظار أو دعوة أحد حتى يرفع مكتب إدارة المرافق الإيقاف.`), { link: "/profile" });
+      audit(me, "user.suspend", "user", u.id, u.name, `Suspended ${u.name} — ${why}${releaseBookings ? `; ${released.cancelled} bookings cancelled, left ${released.left}` : ""}`);
+      return released;
+    });
+  },
+
+  async unsuspendStudent(userId: string, reason?: string) {
+    const me = requirePermission("student.manage");
+    return db.transaction(() => {
+      const u = studentOrThrow(userId);
+      if (u.status !== "suspended") throw new ApiError("CONFLICT", "This account isn’t suspended.");
+      db.put("users", { ...u, status: "active", statusNote: undefined });
+      notify(u.id, "restriction", () => L("Your account is active again", "تم تفعيل حسابك مرة أخرى"), () => L("You can book, join waitlists and invite players again.", "يمكنك الحجز والانضمام لقوائم الانتظار ودعوة اللاعبين مرة أخرى."), { link: "/explore" });
+      audit(me, "user.unsuspend", "user", u.id, u.name, `Lifted the suspension of ${u.name}${reason?.trim() ? ` — ${reason.trim()}` : ""}`);
+    });
+  },
+
+  /**
+   * Close a student account. Nothing is deleted — bookings, strikes and the
+   * audit trail stay — but the account is signed out everywhere, can't sign
+   * in, and is taken out of everything still to come. Its email and
+   * university ID become free for a new account.
+   */
+  async deactivateStudent(userId: string, reason: string) {
+    const me = requirePermission("student.manage");
+    if (reason.trim().length < 4) throw new ApiError("VALIDATION", "Add a short reason for the audit log.");
+    return db.transaction(() => {
+      const u = studentOrThrow(userId);
+      if (u.status === "deactivated") throw new ApiError("CONFLICT", "This account is already closed.");
+      const next: User = { ...u, status: "deactivated", statusNote: { reason: reason.trim(), at: clock.now().toISOString(), byUserId: me.id } };
+      db.put("users", next);
+      signOutEverywhere(u.id);
+      const released = releaseStudent(next, me, { bookings: true });
+      audit(me, "user.deactivate", "user", u.id, u.name, `Closed the account of ${u.name} — ${reason.trim()}; ${released.cancelled} bookings cancelled, left ${released.left}, ${released.declined} invitations declined, ${released.waitlists} waitlist places ended`);
+      return released;
+    });
+  },
+
+  /** Reopen a closed account — unless a newer account now uses its email or university ID. */
+  async reactivateStudent(userId: string, reason?: string) {
+    const me = requirePermission("student.manage");
+    return db.transaction(() => {
+      const u = studentOrThrow(userId);
+      if (u.status !== "deactivated") throw new ApiError("CONFLICT", "This account isn’t closed.");
+      const taken = db.state.users.some((x) => x.id !== u.id && x.status !== "deactivated" && (x.email.toLowerCase() === u.email.toLowerCase() || (!!u.universityId && x.universityId === u.universityId)));
+      if (taken) throw new ApiError("CONFLICT", "Another account now uses this email or university ID, so this one can’t be reopened.");
+      db.put("users", { ...u, status: "active", statusNote: undefined });
+      audit(me, "user.reactivate", "user", u.id, u.name, `Reopened the account of ${u.name}${reason?.trim() ? ` — ${reason.trim()}` : ""}`);
+    });
+  },
+
+  /**
+   * Correct a student's faculty or year. The correction is marked as the
+   * office's, so reloading the official list doesn't undo it; students can't
+   * change these themselves.
+   */
+  async updateStudent(userId: string, patch: { faculty?: string; year?: number }) {
+    const me = requirePermission("student.manage");
+    if (patch.faculty !== undefined && !FACULTIES.includes(patch.faculty)) throw new ApiError("VALIDATION", "Choose a faculty from the list.");
+    return db.transaction(() => {
+      const u = studentOrThrow(userId);
+      const at = clock.now().toISOString();
+      const changed = (["faculty", "year"] as const).filter((f) => patch[f] !== undefined && patch[f] !== u[f]);
+      if (changed.length === 0) throw new ApiError("VALIDATION", "Nothing has changed.");
+      const overrides = { ...u.overrides };
+      for (const f of changed) overrides[f] = { at, byUserId: me.id };
+      const next: User = { ...u, faculty: patch.faculty ?? u.faculty, year: patch.year ?? u.year, overrides };
+      db.put("users", next);
+      notify(u.id, "restriction", () => L("Your details were updated", "تم تحديث بياناتك"), () => L(`The facilities office updated your ${changed.map((f) => (f === "faculty" ? `faculty to ${next.faculty}` : `year to ${next.year}`)).join(" and ")}.`, `حدّث مكتب إدارة المرافق ${changed.map((f) => (f === "faculty" ? `كليتك إلى ${tStored(next.faculty)}` : `سنتك إلى ${next.year}`)).join(" و")}.`), { link: "/profile" });
+      audit(me, "user.update", "user", u.id, u.name, `Corrected ${changed.map((f) => `${f} from ${u[f] ?? "—"} to ${next[f]}`).join(", ")}`);
+      return next;
+    });
+  },
+
+  /** Drop the office's correction of one detail and go back to the official list's value (if it has one). */
+  async useOfficialValue(userId: string, field: CorrectableField) {
+    const me = requirePermission("student.manage");
+    return db.transaction(() => {
+      const u = studentOrThrow(userId);
+      if (!u.overrides?.[field]) throw new ApiError("CONFLICT", "This detail hasn’t been corrected by the office.");
+      const entry = u.universityId ? rosterIndex()?.get(u.universityId) : undefined;
+      const overrides = { ...u.overrides };
+      delete overrides[field];
+      const next: User = { ...u, [field]: entry?.[field] ?? u[field], overrides: Object.keys(overrides).length ? overrides : undefined };
+      db.put("users", next);
+      audit(me, "user.update", "user", u.id, u.name, `Went back to the official ${field}${entry?.[field] !== undefined ? ` (${entry[field]})` : ""}`);
+      return next;
+    });
+  },
+
+  /* ───────────── Official student list ───────────── */
+
+  /** How the uploaded list lines up with the accounts students have made. */
+  async roster(): Promise<RosterSummary> {
+    requirePermission("student.manage");
+    return rosterSummary();
+  },
+
+  /** Read a list file and report what loading it would change — and every line that can't be used. Nothing is saved. */
+  async previewRoster(csv: string): Promise<RosterImportReport> {
+    requirePermission("student.manage");
+    return planRoster(csv).report;
+  },
+
+  /**
+   * Replace the official list with this file — all of it, or nothing if any
+   * line can't be used. From then on only these university IDs can register,
+   * book or be invited, and matching accounts take their details from the
+   * list (except anything an administrator corrected by hand).
+   */
+  async importRoster(csv: string): Promise<RosterImportReport> {
+    const me = requirePermission("student.manage");
+    return db.transaction(() => {
+      const { report, entries, accounts } = planRoster(csv);
+      if (report.problemCount > 0) {
+        const n = report.problemCount;
+        throw new ApiError("VALIDATION", L(`Nothing was loaded — ${n} ${n === 1 ? "line needs" : "lines need"} fixing first.`, `لم يتم تحميل أي شيء — يجب إصلاح ${N.line(n)} أولًا.`), undefined, { report });
+      }
+      db.replaceTable("roster", entries);
+      db.setSingleton("meta", { ...db.state.meta, rosterUpdatedAt: clock.now().toISOString() });
+      db.putMany("users", accounts);
+      db.afterCommit(clearRegistrationLocks);
+      audit(me, "roster.import", "settings", "roster", "Student list", `Loaded the official student list: ${report.rows} students (${report.added} new, ${report.updated} changed, ${report.removed} removed, ${report.inactive} inactive); ${report.accounts.updated} accounts updated`);
+      return { ...report, applied: true };
+    });
+  },
+
+  /** Remove the official list. Registration closes until a new one is loaded; existing accounts are unaffected. */
+  async clearRoster(reason: string) {
+    const me = requirePermission("student.manage");
+    if (reason.trim().length < 4) throw new ApiError("VALIDATION", L("Add a short reason for the audit log.", "أضف سببًا قصيرًا لسجل التدقيق."));
+    await db.transaction(() => {
+      db.replaceTable("roster", []);
+      db.setSingleton("meta", { ...db.state.meta, rosterUpdatedAt: clock.now().toISOString() });
+      audit(me, "roster.clear", "settings", "roster", "Student list", `Removed the official student list — registration closed until a new list is loaded — ${reason.trim()}`);
     });
   },
 
@@ -666,7 +1128,7 @@ export const admin = {
     const heat = heatmapFor(facs.filter((f) => f.status === "active"), from, rangeDays);
     const insights: AnalyticsData["insights"] = [];
     const top = byFacility[0];
-    if (top && top.utilization > 0.6) insights.push({ tone: "warning", text: L(`${top.name} runs at ${pct(top.utilization)}% utilisation${top.waitlist ? ` with ${top.waitlist} waitlist joins` : ""}. Consider extending evening hours or adding sessions.`, `إشغال ${top.name} يصل إلى ${pct(top.utilization)}%${top.waitlist ? ` مع ${top.waitlist} انضمام لقوائم الانتظار` : ""}. فكّر في مد ساعات المساء أو إضافة مواعيد.`) });
+    if (top && top.utilization > 0.6) insights.push({ tone: "warning", text: L(`${top.name} runs at ${pct(top.utilization)}% utilisation${top.waitlist ? ` with ${top.waitlist} waitlist joins` : ""}. Consider longer opening hours or more sessions.`, `إشغال ${top.name} يصل إلى ${pct(top.utilization)}%${top.waitlist ? ` مع ${top.waitlist} انضمام لقوائم الانتظار` : ""}. فكّر في مد ساعات العمل أو إضافة مواعيد.`) });
     const peak = [...heat].sort((a, b) => b.value - a.value)[0];
     if (peak) insights.push({ tone: "info", text: L(`Peak demand is ${["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"][peak.weekday]} around ${String(peak.hour).padStart(2, "0")}:00 — ${pct(peak.value)}% of capacity booked.`, `ذروة الطلب يوم ${["الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"][peak.weekday]} حوالي الساعة ${String(peak.hour).padStart(2, "0")}:00 — ${pct(peak.value)}% من السعة محجوزة.`) });
     const worstNs = [...byCategory].sort((a, b) => b.noShowRate - a.noShowRate)[0];
@@ -702,7 +1164,8 @@ export const admin = {
   /* ───────────── Settings, roles & team ───────────── */
   async settings() {
     requirePermission("settings.manage");
-    return { settings: db.state.settings, roles: db.state.roles };
+    // The server runs on the TIMEZONE it was started with — show that, not a stored copy that could disagree.
+    return { settings: { ...db.state.settings, timezone: config.timezone }, roles: db.state.roles };
   },
 
   async updateSettings(patch: Partial<SystemSettings>, summary: string) {

@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { useMutation } from "@tanstack/react-query";
-import { Building2, Plus, Tags, Wrench } from "lucide-react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Archive, ArchiveRestore, Building2, Plus, Tags, Trash2, Wrench } from "lucide-react";
 import { api } from "@/api";
 import type { CategoryKind, FacilityCategory, Motif } from "@/domain/types";
 import { cn } from "@/lib/cn";
-import { errorMessage, useAdminFacilities, usePolicies } from "@/lib/queries";
+import { errorMessage, useAdminFacilities } from "@/lib/queries";
 import { useCan } from "@/state/session";
 import { KIND_LABEL, MOTIF_ICONS } from "@/components/icons";
 import { FacilityArt } from "@/components/facility/FacilityArt";
@@ -17,10 +17,41 @@ import { Dialog } from "@/components/ui/Overlay";
 import { toast } from "@/components/ui/Toast";
 import { AdminHeader } from "@/layouts/AdminLayout";
 import { ReasonDialog, TableShell, td, th, useUrlFilters } from "./shared";
-import { N, t } from "@/i18n";
+import { L, N, t } from "@/i18n";
 import { facilityName, localFacility } from "@/domain/localize";
 
 type Row = NonNullable<ReturnType<typeof useAdminFacilities>["data"]>[number];
+
+/** Confirm a retire/delete action — plain yes/no, the consequences spelled out. */
+function ConfirmDialog({ open, onClose, title, description, confirmLabel, danger, loading, error, onConfirm }: { open: boolean; onClose: () => void; title: string; description: string; confirmLabel: string; danger?: boolean; loading?: boolean; error?: string; onConfirm: () => void }) {
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      size="sm"
+      title={title}
+      description={description}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            {t("Cancel")}
+          </Button>
+          <Button variant={danger ? "danger" : "primary"} loading={loading} onClick={onConfirm}>
+            {confirmLabel}
+          </Button>
+        </>
+      }
+    >
+      {error && (
+        <p role="alert" className="text-sm font-medium text-danger">
+          {error}
+        </p>
+      )}
+    </Dialog>
+  );
+}
+
+type TypeAction = { kind: "archive" | "delete"; category: FacilityCategory } | null;
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
 
@@ -34,7 +65,8 @@ function CategoryDialog({ category, open, onClose, nextOrder }: { category: Faci
     if (open) setC(category ?? blank(nextOrder));
   }, [open, category, nextOrder]);
   const save = useMutation({
-    mutationFn: () => api.admin.saveCategory({ ...c, id: c.id || `c_${slug(c.name)}` }, isNew),
+    // Arabic-only names have no Latin letters to make an ID from — fall back to a unique one.
+    mutationFn: () => api.admin.saveCategory({ ...c, id: c.id || `c_${slug(c.name) || Date.now().toString(36)}` }, isNew),
     onSuccess: (r) => {
       toast.success(isNew ? t("Facility type created") : t("Facility type saved"), r.name);
       onClose();
@@ -59,7 +91,7 @@ function CategoryDialog({ category, open, onClose, nextOrder }: { category: Faci
       }
     >
       <div className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label={t("Name")} htmlFor="cat-name" error={save.isError ? errorMessage(save.error) : undefined}>
             <Input id="cat-name" value={c.name} onChange={(e) => set("name", e.target.value)} placeholder={t("e.g. Racket Sports")} />
           </Field>
@@ -73,7 +105,7 @@ function CategoryDialog({ category, open, onClose, nextOrder }: { category: Faci
         <Field label={t("Arabic description")} htmlFor="cat-desc-ar" optional>
           <Textarea id="cat-desc-ar" dir="rtl" lang="ar" value={c.ar?.description ?? ""} onChange={(e) => set("ar", { ...c.ar, description: e.target.value || undefined })} className="min-h-16" />
         </Field>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field label={t("Group")} htmlFor="cat-kind">
             <Select id="cat-kind" value={c.kind} onChange={(e) => set("kind", e.target.value as CategoryKind)}>
               {(Object.keys(KIND_LABEL) as CategoryKind[]).map((k) => (
@@ -110,12 +142,42 @@ export default function FacilitiesPage() {
   const { get, patch } = useUrlFilters();
   const tab = get("tab") === "types" ? "types" : "facilities";
   const facilities = useAdminFacilities();
-  const policies = usePolicies();
+  const types = useQuery({ queryKey: ["admin", "categories"], queryFn: () => api.admin.categories() });
   const canManage = useCan("facility.manage");
   const canCategories = useCan("category.manage");
   const [search, setSearch] = useState("");
   const [toggling, setToggling] = useState<Row | null>(null);
   const [editing, setEditing] = useState<FacilityCategory | "new" | null>(null);
+  const [deleting, setDeleting] = useState<Row | null>(null);
+  const [typeAction, setTypeAction] = useState<TypeAction>(null);
+  const showArchived = get("archived") === "1";
+
+  const restore = useMutation({
+    mutationFn: (r: Row) => api.admin.restoreFacility(r.facility.id),
+    onSuccess: (f) => toast.success(t("{name} restored", { name: facilityName(f) }), f.status === "active" ? t("It’s open for booking again.") : t("It’s back as it was — still closed. Reopen it when it’s ready.")),
+    onError: (e) => toast.error(t("Couldn’t restore"), errorMessage(e)),
+  });
+  const remove = useMutation({
+    mutationFn: (r: Row) => api.admin.deleteFacility(r.facility.id),
+    onSuccess: (_x, r) => {
+      toast.success(t("{name} deleted", { name: facilityName(r.facility) }));
+      setDeleting(null);
+    },
+  });
+  const typeRun = useMutation({
+    mutationFn: async ({ kind, category }: { kind: "archive" | "restore" | "delete"; category: FacilityCategory }): Promise<void> => {
+      if (kind === "archive") await api.admin.archiveCategory(category.id);
+      else if (kind === "restore") await api.admin.restoreCategory(category.id);
+      else await api.admin.deleteCategory(category.id);
+    },
+    onSuccess: (_x, { kind, category }) => {
+      toast.success(kind === "archive" ? t("{name} archived", { name: facilityName(category) }) : kind === "restore" ? t("{name} restored", { name: facilityName(category) }) : t("{name} deleted", { name: facilityName(category) }));
+      setTypeAction(null);
+    },
+    onError: (e, { kind }) => {
+      if (kind === "restore") toast.error(t("Couldn’t restore"), errorMessage(e));
+    },
+  });
 
   const setStatus = useMutation({
     mutationFn: ({ r, reason }: { r: Row; reason?: string }) => api.admin.setFacilityStatus(r.facility.id, r.facility.status === "active" ? "inactive" : "active", reason),
@@ -126,11 +188,12 @@ export default function FacilitiesPage() {
     onError: (e) => toast.error(t("Couldn’t update"), errorMessage(e)),
   });
 
-  const categories = policies.data?.categories ?? [];
+  const typeRows = types.data ?? [];
+  const liveTypes = typeRows.filter((x) => !x.category.archived);
+  const archivedTypes = typeRows.filter((x) => x.category.archived);
   const term = search.trim().toLowerCase();
-  const rows = (facilities.data ?? []).filter((r) => !term || [r.facility.name, r.category.name, r.facility.location.building].some((x) => x.toLowerCase().includes(term)));
-  const countByCat = new Map<string, number>();
-  for (const r of facilities.data ?? []) countByCat.set(r.category.id, (countByCat.get(r.category.id) ?? 0) + 1);
+  const archivedCount = (facilities.data ?? []).filter((r) => r.facility.archived).length;
+  const rows = (facilities.data ?? []).filter((r) => !!r.facility.archived === showArchived).filter((r) => !term || [r.facility.name, r.facility.nameAr ?? "", r.category.name, r.facility.location.building].some((x) => x.toLowerCase().includes(term)));
 
   return (
     <div>
@@ -156,8 +219,8 @@ export default function FacilitiesPage() {
         value={tab}
         onChange={(v) => patch({ tab: v === "types" ? "types" : null })}
         items={[
-          { value: "facilities", label: t("Facilities"), count: facilities.data?.length, icon: <Building2 className="size-4" /> },
-          { value: "types", label: t("Facility types"), count: categories.length || undefined, icon: <Tags className="size-4" /> },
+          { value: "facilities", label: t("Facilities"), count: facilities.data ? facilities.data.length - archivedCount : undefined, icon: <Building2 className="size-4" /> },
+          { value: "types", label: t("Facility types"), count: liveTypes.length || undefined, icon: <Tags className="size-4" /> },
         ]}
       />
 
@@ -168,9 +231,17 @@ export default function FacilitiesPage() {
           <Skeleton className="h-96 rounded-[20px]" />
         ) : (
           <>
-            <SearchInput value={search} onChange={setSearch} placeholder={t("Search by name, type or building")} label={t("Search facilities")} className="mb-4 max-w-md" />
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <SearchInput value={search} onChange={setSearch} placeholder={t("Search by name, type or building")} label={t("Search facilities")} className="min-w-60 max-w-md flex-1" />
+              {(archivedCount > 0 || showArchived) && (
+                <Button size="sm" variant={showArchived ? "soft" : "ghost"} icon={<Archive className="size-4" />} aria-pressed={showArchived} onClick={() => patch({ archived: showArchived ? null : "1" })}>
+                  {showArchived ? t("Back to current facilities") : t("Archived ({n})", { n: archivedCount })}
+                </Button>
+              )}
+            </div>
+            {showArchived && <p className="mb-3 text-sm text-muted">{t("Archived facilities can’t be booked and are hidden from students and staff. Their bookings and history are kept.")}</p>}
             {rows.length === 0 ? (
-              <EmptyState icon={Building2} title={t("No facilities match")} className="rounded-[20px] border border-line bg-surface" />
+              <EmptyState icon={Building2} title={showArchived ? t("Nothing archived") : t("No facilities match")} className="rounded-[20px] border border-line bg-surface" />
             ) : (
               <TableShell>
                 <thead className="border-b border-line bg-surface-2/60">
@@ -212,7 +283,11 @@ export default function FacilitiesPage() {
                           <span className="block text-xs text-muted">{f.sessionMinutes}{t("-min sessions")}</span>
                         </td>
                         <td className={td}>
-                          {f.status !== "active" ? (
+                          {f.archived ? (
+                            <Badge size="xs" icon={<Archive className="size-3" />}>
+                              {t("Archived")}
+                            </Badge>
+                          ) : f.status !== "active" ? (
                             <Badge size="xs" tone="danger" dot>
                               {t("Closed")}
                             </Badge>
@@ -238,7 +313,18 @@ export default function FacilitiesPage() {
                           )}
                         </td>
                         <td className={cn(td, "whitespace-nowrap text-end")}>
-                          {canManage && (
+                          {canManage && f.archived ? (
+                            <span className="inline-flex gap-1">
+                              <Button size="xs" variant="soft" icon={<ArchiveRestore className="size-3.5" />} loading={restore.isPending && restore.variables?.facility.id === f.id} onClick={() => restore.mutate(r)}>
+                                {t("Restore")}
+                              </Button>
+                              {!r.hasHistory && (
+                                <Button size="xs" variant="ghost" icon={<Trash2 className="size-3.5" />} onClick={() => setDeleting(r)}>
+                                  {t("Delete")}
+                                </Button>
+                              )}
+                            </span>
+                          ) : canManage && (
                             <span className="inline-flex gap-1">
                               <Button size="xs" variant="ghost" onClick={() => nav(`/admin/facilities/${f.id}`)}>
                                 {t("Edit")}
@@ -263,43 +349,82 @@ export default function FacilitiesPage() {
             )}
           </>
         )
-      ) : policies.isError ? (
-        <ErrorState error={policies.error} onRetry={() => policies.refetch()} />
-      ) : !policies.data ? (
+      ) : types.isError ? (
+        <ErrorState error={types.error} onRetry={() => types.refetch()} />
+      ) : !types.data ? (
         <Skeleton className="h-72 rounded-[20px]" />
       ) : (
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {categories.map((c) => {
-            const Icon = MOTIF_ICONS[c.motif];
-            return (
-              <article key={c.id} className={cn("flex gap-3.5 rounded-[20px] border border-line bg-surface p-4 shadow-sm", !c.active && "opacity-60")}>
-                <span className="flex size-11 shrink-0 items-center justify-center rounded-2xl text-white" style={{ background: c.color }}>
-                  <Icon className="size-5" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-2">
-                    <h3 className="truncate text-[15px] font-bold text-ink">{facilityName(c)}</h3>
-                    {!c.active && <Badge size="xs">{t("Hidden")}</Badge>}
+        <>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {liveTypes.map(({ category: c, facilities: n, archivedFacilities }) => {
+              const Icon = MOTIF_ICONS[c.motif];
+              return (
+                <article key={c.id} className={cn("flex gap-3.5 rounded-[20px] border border-line bg-surface p-4 shadow-sm", !c.active && "opacity-60")}>
+                  <span className="flex size-11 shrink-0 items-center justify-center rounded-2xl text-white" style={{ background: c.color }}>
+                    <Icon className="size-5" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <h3 className="truncate text-[15px] font-bold text-ink">{facilityName(c)}</h3>
+                      {!c.active && <Badge size="xs">{t("Hidden")}</Badge>}
+                    </div>
+                    <p className="text-xs text-muted">
+                      {KIND_LABEL[c.kind]} · {N.facility(n)}
+                    </p>
+                    <p className="mt-1.5 line-clamp-2 text-[13px] text-ink-2">{c.description}</p>
+                    <div className="mt-3 flex flex-wrap gap-1">
+                      {canCategories && (
+                        <Button size="xs" variant="secondary" onClick={() => setEditing(c)}>
+                          {t("Edit")}
+                        </Button>
+                      )}
+                      <Link to={`/admin/policies?level=category&id=${c.id}`} className="inline-flex h-7 items-center rounded-full px-2.5 text-xs font-semibold text-brand hover:bg-brand-soft">
+                        {t("Booking rules")}
+                      </Link>
+                      {canCategories && n === 0 && (
+                        <Button size="xs" variant="ghost" icon={archivedFacilities === 0 ? <Trash2 className="size-3.5" /> : <Archive className="size-3.5" />} onClick={() => setTypeAction({ kind: archivedFacilities === 0 ? "delete" : "archive", category: c })}>
+                          {archivedFacilities === 0 ? t("Delete") : t("Archive")}
+                        </Button>
+                      )}
+                    </div>
+                    {canCategories && n > 0 && <p className="mt-2 text-[11px] text-faint">{t("To retire this type, archive or move its facilities first.")}</p>}
                   </div>
-                  <p className="text-xs text-muted">
-                    {KIND_LABEL[c.kind]} · {countByCat.get(c.id) ?? 0}{" "}{t("facilities")}
-                  </p>
-                  <p className="mt-1.5 line-clamp-2 text-[13px] text-ink-2">{c.description}</p>
-                  <div className="mt-3 flex gap-1">
+                </article>
+              );
+            })}
+          </div>
+          {archivedTypes.length > 0 && (
+            <section className="mt-8">
+              <h2 className="mb-3 flex items-center gap-2 text-sm font-bold text-ink">
+                <Archive className="size-4 text-muted" />
+                {t("Archived types")}
+              </h2>
+              <ul className="divide-y divide-line rounded-[20px] border border-line bg-surface">
+                {archivedTypes.map(({ category: c, facilities: n, archivedFacilities }) => (
+                  <li key={c.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+                    <span className="size-2.5 shrink-0 rounded-full" style={{ background: c.color }} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold text-ink">{facilityName(c)}</span>
+                      <span className="block text-xs text-muted">{L(`${N.facility(archivedFacilities)} archived`, `${N.facility(archivedFacilities)} مؤرشفة`)}</span>
+                    </span>
                     {canCategories && (
-                      <Button size="xs" variant="secondary" onClick={() => setEditing(c)}>
-                        {t("Edit")}
-                      </Button>
+                      <span className="inline-flex gap-1">
+                        <Button size="xs" variant="soft" icon={<ArchiveRestore className="size-3.5" />} loading={typeRun.isPending && typeRun.variables?.kind === "restore" && typeRun.variables.category.id === c.id} onClick={() => typeRun.mutate({ kind: "restore", category: c })}>
+                          {t("Restore")}
+                        </Button>
+                        {n + archivedFacilities === 0 && (
+                          <Button size="xs" variant="ghost" icon={<Trash2 className="size-3.5" />} onClick={() => setTypeAction({ kind: "delete", category: c })}>
+                            {t("Delete")}
+                          </Button>
+                        )}
+                      </span>
                     )}
-                    <Link to={`/admin/policies?level=category&id=${c.id}`} className="inline-flex h-7 items-center rounded-full px-2.5 text-xs font-semibold text-brand hover:bg-brand-soft">
-                      {t("Booking rules")}
-                    </Link>
-                  </div>
-                </div>
-              </article>
-            );
-          })}
-        </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </>
       )}
 
       <ReasonDialog
@@ -315,7 +440,29 @@ export default function FacilitiesPage() {
       >
         {toggling && toggling.upcomingBookings > 0 && <p className="rounded-xl bg-warning-soft p-3 text-sm text-ink-2">{toggling.upcomingBookings}{" "}{t("upcoming bookings will be cancelled without a strike, and every student is notified with your reason.")}</p>}
       </ReasonDialog>
-      <CategoryDialog open={!!editing} category={editing === "new" ? null : editing} onClose={() => setEditing(null)} nextOrder={categories.length + 1} />
+      <ConfirmDialog
+        open={!!deleting}
+        onClose={() => setDeleting(null)}
+        title={t("Delete {name} for good?", { name: deleting ? facilityName(deleting.facility) : "" })}
+        description={t("It has never had a booking, waitlist, issue or maintenance entry, so nothing else is affected. This can’t be undone.")}
+        confirmLabel={t("Delete facility")}
+        danger
+        loading={remove.isPending}
+        error={remove.isError ? errorMessage(remove.error) : undefined}
+        onConfirm={() => deleting && remove.mutate(deleting)}
+      />
+      <ConfirmDialog
+        open={!!typeAction}
+        onClose={() => setTypeAction(null)}
+        title={typeAction?.kind === "delete" ? t("Delete {name} for good?", { name: typeAction ? facilityName(typeAction.category) : "" }) : t("Archive {name}?", { name: typeAction ? facilityName(typeAction.category) : "" })}
+        description={typeAction?.kind === "delete" ? t("No facility uses this type, so nothing else is affected. This can’t be undone.") : t("It disappears from students and can’t be chosen for new facilities. Its archived facilities keep their history. You can restore it later.")}
+        confirmLabel={typeAction?.kind === "delete" ? t("Delete type") : t("Archive type")}
+        danger={typeAction?.kind === "delete"}
+        loading={typeRun.isPending}
+        error={typeRun.isError && typeRun.variables?.kind !== "restore" ? errorMessage(typeRun.error) : undefined}
+        onConfirm={() => typeAction && typeRun.mutate(typeAction)}
+      />
+      <CategoryDialog open={!!editing} category={editing === "new" ? null : editing} onClose={() => setEditing(null)} nextOrder={typeRows.length + 1} />
     </div>
   );
 }

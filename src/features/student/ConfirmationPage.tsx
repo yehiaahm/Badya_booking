@@ -56,11 +56,19 @@ export function ConfirmationPage() {
 
   const b = q.data;
   const f = b.facility;
-  const pending = b.status === "PENDING";
+  const awaiting = b.status === "AWAITING_PLAYERS";
+  const pending = b.status === "PENDING" || awaiting;
   const opens = new Date(b.checkInWindow.opens);
   const closes = new Date(b.checkInWindow.closes);
+  const deadline = b.playersDeadline ? format(new Date(b.playersDeadline), "EEE HH:mm") : "";
 
-  const steps = pending
+  const steps = awaiting
+    ? [
+        { icon: Users, title: t("Your players accept on their phones"), body: t("Each of them got an invitation. Nothing counts towards their limits until they accept.") },
+        { icon: Hourglass, title: t("Acceptances still needed: {n} — by {time}", { n: b.playersNeeded, time: deadline }), body: t("If too few accept in time, the booking is cancelled without a strike and the session reopens for others.") },
+        { icon: QrIcon, title: t("Your QR code appears once it’s confirmed"), body: t("Show it at the entrance to check in.") },
+      ]
+    : pending
     ? [
         { icon: Hourglass, title: t("Staff review your request"), body: t("Most requests are answered within a working day. We’ll notify you either way.") },
         { icon: QrIcon, title: t("Your QR code appears once approved"), body: t("Show it at the entrance to check in.") },
@@ -76,8 +84,8 @@ export function ConfirmationPage() {
     <div className="mx-auto max-w-xl px-4 pb-10 pt-[max(40px,env(safe-area-inset-top))] sm:px-6 lg:pt-14">
       <Seal pending={pending} />
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="mt-6 text-center">
-        <h1 className="font-display text-[38px] leading-none text-ink">{pending ? t("Request sent") : t("You’re booked!")}</h1>
-        <p className="mt-2 text-sm text-muted">{pending ? t("{name} needs staff approval. We’ll let you know as soon as it’s reviewed.", { name: f.name }) : t("See you at {name}. Your booking is confirmed.", { name: f.name })}</p>
+        <h1 className="font-display text-[38px] leading-none text-ink">{awaiting ? t("Invitations sent") : pending ? t("Request sent") : t("You’re booked!")}</h1>
+        <p className="mt-2 text-sm text-muted">{awaiting ? t("{name} is held for you while your players accept.", { name: f.name }) : pending ? t("{name} needs staff approval. We’ll let you know as soon as it’s reviewed.", { name: f.name }) : t("See you at {name}. Your booking is confirmed.", { name: f.name })}</p>
       </motion.div>
 
       <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}>
@@ -94,7 +102,7 @@ export function ConfirmationPage() {
             <span className="absolute -start-2.5 -top-2.5 size-5 rounded-full bg-bg" />
             <span className="absolute -end-2.5 -top-2.5 size-5 rounded-full bg-bg" />
           </div>
-          <dl className="grid gap-4 p-5 sm:grid-cols-2">
+          <dl className="grid grid-cols-1 gap-4 p-5 sm:grid-cols-2">
             <div className="flex gap-3">
               <Clock className="mt-0.5 size-5 shrink-0 text-muted" />
               <div>
@@ -111,13 +119,13 @@ export function ConfirmationPage() {
                 <dd className="truncate text-sm text-ink-2">{[b.unitName ? f.location.building : null, f.location.floor ?? f.location.area].filter(Boolean).join(" · ")}</dd>
               </div>
             </div>
-            {b.people.length > 0 && (
+            {b.team.length > 0 && (
               <div className="flex items-center gap-3 sm:col-span-2">
                 <Users className="size-5 shrink-0 text-muted" />
                 <dt className="sr-only">{t("With")}</dt>
-                <AvatarStack people={[b.booker, ...b.people]} size={26} max={6} />
+                <AvatarStack people={[b.booker, ...b.team.map((p) => p.user)]} size={26} max={6} />
                 <dd className="text-sm text-ink-2">
-                  {t("{people} added — we’ve let them know.", { people: N.person(b.people.length) })}
+                  {t("{people} invited — each accepts from their own phone.", { people: N.person(b.team.length) })}
                 </dd>
               </div>
             )}
@@ -148,9 +156,9 @@ export function ConfirmationPage() {
         ))}
       </motion.ol>
 
-      <div className="mt-8 grid gap-2 sm:grid-cols-2">
+      <div className="mt-8 grid grid-cols-1 gap-2 sm:grid-cols-2">
         <Button size="lg" onClick={() => nav(`/bookings/${b.id}`, { replace: true })} icon={pending ? <Check className="size-4" /> : <QrIcon className="size-4" />}>
-          {pending ? t("View request") : t("View booking & QR")}
+          {awaiting ? t("View booking") : pending ? t("View request") : t("View booking & QR")}
         </Button>
         <Button size="lg" variant="secondary" onClick={() => downloadIcs(b)} icon={<CalendarPlus className="size-4" />}>
           {t("Add to calendar")}

@@ -39,6 +39,8 @@ class Db {
   private pendingSingletons = new Map<Singleton, unknown>();
   private queue: Promise<unknown> = Promise.resolve();
   private depth = 0;
+  /** Work that must only happen once the current writes are safely on disk (e.g. sending push messages). */
+  private commitHooks: (() => void)[] = [];
 
   open(file: string) {
     mkdirSync(path.dirname(file), { recursive: true });
@@ -87,6 +89,38 @@ class Db {
     this.autoFlush();
   }
 
+  /** Insert or update many rows with a single copy of the table (bulk updates). */
+  putMany<T extends RowTable>(table: T, rows: DbState[T]) {
+    const incoming = rows as unknown as Row[];
+    if (incoming.length === 0) return;
+    const byId = new Map(incoming.map((r) => [r.id, r]));
+    const arr = this.state[table] as unknown as Row[];
+    const next = arr.map((x) => byId.get(x.id) ?? x);
+    const known = new Set(arr.map((x) => x.id));
+    for (const r of byId.values()) {
+      if (!known.has(r.id)) next.push(r);
+      this.pendingRows.set(`${table}\u0000${r.id}`, { table, id: r.id, row: r });
+    }
+    (this.state as unknown as Record<string, Row[]>)[table] = next;
+    this.autoFlush();
+  }
+
+  /** Replace every row of a table in one go (bulk imports). */
+  replaceTable<T extends RowTable>(table: T, rows: DbState[T]) {
+    const next = rows as unknown as Row[];
+    const keep = new Set(next.map((r) => r.id));
+    for (const old of this.state[table] as unknown as Row[]) if (!keep.has(old.id)) this.pendingRows.set(`${table}\u0000${old.id}`, { table, id: old.id, row: null });
+    for (const r of next) this.pendingRows.set(`${table}\u0000${r.id}`, { table, id: r.id, row: r });
+    (this.state as unknown as Record<string, Row[]>)[table] = [...next];
+    this.autoFlush();
+  }
+
+  /** Run `fn` after the current transaction's writes are committed; dropped if they fail. */
+  afterCommit(fn: () => void) {
+    if (this.depth > 0) this.commitHooks.push(fn);
+    else setImmediate(fn);
+  }
+
   remove(table: RowTable, id: string) {
     (this.state as unknown as Record<string, Row[]>)[table] = (this.state[table] as unknown as Row[]).filter((x) => x.id !== id);
     this.pendingRows.set(`${table}\u0000${id}`, { table, id, row: null });
@@ -102,18 +136,31 @@ class Db {
   /**
    * Run a mutation and persist its writes. Mutations run strictly one after
    * another. `silent` writes (e.g. "last seen" timestamps) don't notify
-   * live-update listeners.
+   * live-update listeners. A mutation that throws changes nothing: its writes
+   * are discarded and its after-commit work (push messages) never runs.
    */
   transaction<T>(fn: () => T, opts: { silent?: boolean } = {}): Promise<T> {
     const run = () => {
       this.depth++;
+      // Writes replace whole arrays and objects, so a shallow copy is a snapshot.
+      const before = { ...this.state };
+      let failed = true;
       try {
-        return fn();
+        const result = fn();
+        failed = false;
+        return result;
       } finally {
         this.depth--;
-        // Validation errors are thrown before any write. Writes that did
-        // happen (e.g. a competing booking that won the race) are committed.
-        this.flush(opts.silent);
+        const hooks = this.commitHooks;
+        this.commitHooks = [];
+        if (failed) {
+          this.state = before;
+          this.pendingRows.clear();
+          this.pendingSingletons.clear();
+        } else {
+          this.flush(opts.silent);
+          for (const h of hooks) setImmediate(h);
+        }
       }
     };
     const p = this.queue.then(run, run);

@@ -12,7 +12,7 @@ import { Ring, Skeleton, AvatarStack } from "@/components/ui/Primitives";
 import { ErrorState } from "@/components/ui/Primitives";
 import { BOOKING_STATUS, StatusBadge } from "./status";
 import { QrCode } from "./QrCode";
-import { t } from "@/i18n";
+import { L, t } from "@/i18n";
 
 export function whereLabel(b: BookingView) {
   const f = b.facility;
@@ -24,10 +24,11 @@ export function TicketCard({ b, onQr, className, highlight }: { b: BookingView; 
   const now = useNow(30000);
   const meta = BOOKING_STATUS[b.status];
   const start = new Date(b.start);
-  const upcoming = (b.status === "CONFIRMED" || b.status === "PENDING") && start > now;
+  const upcoming = (b.status === "CONFIRMED" || b.status === "PENDING" || b.status === "AWAITING_PLAYERS") && start > now;
   const soon = upcoming && start.getTime() - now.getTime() < 24 * 3600000;
   const faded = b.status === "CANCELLED" || b.status === "EXPIRED";
   const qrAvailable = (b.status === "CONFIRMED" || b.status === "CHECKED_IN") && b.relation === "booker";
+  const waiting = b.status === "AWAITING_PLAYERS" && b.playersDeadline ? b.playersDeadline : null;
   return (
     <motion.article
       layout
@@ -52,7 +53,7 @@ export function TicketCard({ b, onQr, className, highlight }: { b: BookingView; 
             <h3 className={cn("truncate text-[15px] font-bold text-ink", faded && "text-muted line-through decoration-1")}>{b.facility.name}</h3>
             <p className="mt-0.5 flex items-center gap-1.5 text-[13px] font-semibold text-ink-2 tabular">
               <Clock className="size-3.5 text-muted" />
-              {relDay(b.start, now)}, {fmtRange(b.start, b.end)}
+              {relDay(b.start, now)}{L(", ", "، ")}{fmtRange(b.start, b.end)}
             </p>
           </div>
           <StatusBadge status={b.status} size="xs" />
@@ -64,8 +65,10 @@ export function TicketCard({ b, onQr, className, highlight }: { b: BookingView; 
         <div className="mt-3 flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
             {b.people.length > 0 && <AvatarStack people={[b.booker, ...b.people]} size={22} max={4} />}
-            {b.relation === "participant" ? (
+            {b.relation === "participant" || b.relation === "invited" ? (
               <span className="truncate text-xs text-muted">{t("Booked by")}{" "}{b.booker.name.split(" ")[0]}</span>
+            ) : waiting ? (
+              <span className="truncate text-xs font-semibold text-warning">{t("Waiting for {n} more to accept · until {time}", { n: b.playersNeeded, time: format(new Date(waiting), "HH:mm") })}</span>
             ) : soon ? (
               <span className="truncate text-xs font-semibold text-brand">{t("Starts")}{" "}{fmtRelative(b.start, now)}</span>
             ) : null}
@@ -144,7 +147,7 @@ export function QrSheet({ b, open, onClose }: { b: BookingView | null; open: boo
               <div>
                 <p className="text-[15px] font-bold text-ink">{b.facility.name}</p>
                 <p className="text-sm text-ink-2 tabular">
-                  {relDay(b.start)}, {fmtRange(b.start, b.end)}
+                  {relDay(b.start)}{L(", ", "، ")}{fmtRange(b.start, b.end)}
                 </p>
                 <p className="mt-0.5 text-xs text-muted">{whereLabel(b)}</p>
               </div>

@@ -1,4 +1,4 @@
-import { CalendarCheck, CheckCheck, CircleDot, Clock3, Hourglass, ListOrdered, UserX, XCircle, type LucideIcon } from "lucide-react";
+import { CalendarCheck, CheckCheck, CircleDot, Clock3, Hourglass, ListOrdered, Users, UserX, XCircle, type LucideIcon } from "lucide-react";
 import type { BookingStatus } from "@/domain/types";
 import { cn } from "@/lib/cn";
 import type { Tone } from "@/components/ui/Primitives";
@@ -11,48 +11,73 @@ export interface StatusMeta {
   /** Accent colour for ticket stubs and calendar blocks. */
   color: string;
   description: string;
+  /** The same, for staff and administrators (third person). */
+  staffDescription: string;
 }
 
 export const BOOKING_STATUS: Record<BookingStatus, StatusMeta> = {
+  AWAITING_PLAYERS: { get label() {
+    return t("Waiting for players");
+  }, tone: "warning", icon: Users, color: "var(--warning)", get description() {
+    return t("The session is held while your players accept. It’s confirmed once enough have accepted — otherwise it’s cancelled at the deadline.");
+  }, get staffDescription() {
+    return t("Held while the invited players accept. It’s cancelled automatically if too few accept by the deadline.");
+  } },
   PENDING: { get label() {
     return t("Pending approval");
   }, tone: "warning", icon: Hourglass, color: "var(--warning)", get description() {
     return t("Waiting for staff to review your request.");
+  }, get staffDescription() {
+    return t("Waiting for a staff member to approve or decline it.");
   } },
   CONFIRMED: { get label() {
     return t("Confirmed");
   }, tone: "info", icon: CalendarCheck, color: "var(--info)", get description() {
     return t("You’re booked. Show your QR code when you arrive.");
+  }, get staffDescription() {
+    return t("Booked. The student checks in with their QR code on arrival.");
   } },
   CHECKED_IN: { get label() {
     return t("Checked in");
   }, tone: "success", icon: CircleDot, color: "var(--success)", get description() {
     return t("Session in progress — enjoy!");
+  }, get staffDescription() {
+    return t("Checked in — the session is in progress.");
   } },
   COMPLETED: { get label() {
     return t("Completed");
   }, tone: "neutral", icon: CheckCheck, color: "var(--faint)", get description() {
     return t("You attended this session.");
+  }, get staffDescription() {
+    return t("The student attended this session.");
   } },
   CANCELLED: { get label() {
     return t("Cancelled");
   }, tone: "neutral", icon: XCircle, color: "var(--line-strong)", get description() {
+    return t("This booking was cancelled.");
+  }, get staffDescription() {
     return t("This booking was cancelled.");
   } },
   NO_SHOW: { get label() {
     return t("No-show");
   }, tone: "danger", icon: UserX, color: "var(--danger)", get description() {
     return t("Nobody checked in before the grace period ended.");
+  }, get staffDescription() {
+    return t("Nobody checked in before the grace period ended.");
   } },
   EXPIRED: { get label() {
     return t("Expired");
   }, tone: "neutral", icon: Clock3, color: "var(--line-strong)", get description() {
+    return t("The request wasn’t approved before the session started.");
+  }, get staffDescription() {
     return t("The request wasn’t approved before the session started.");
   } },
   WAITLISTED: { get label() {
     return t("On waitlist");
   }, tone: "violet", icon: ListOrdered, color: "var(--violet)", get description() {
     return t("We’ll notify you when a spot opens.");
+  }, get staffDescription() {
+    return t("Queueing for a full session.");
   } },
 };
 

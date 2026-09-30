@@ -16,6 +16,7 @@ import { AdminHeader } from "@/layouts/AdminLayout";
 import { TableShell, td, th, useUrlFilters } from "./shared";
 import { t as tr, word } from "@/i18n";
 import { ResetPasswordButton, TempPasswordDialog } from "./ResetPassword";
+import { facilityName } from "@/domain/localize";
 
 const PERMISSION_GROUPS: { title: string; perms: { key: Permission; label: string }[] }[] = [
   {
@@ -162,11 +163,11 @@ function SettingsForm({ settings, security }: { settings: SystemSettings; securi
           {security ? (
             <>
               {row(tr("QR code refresh"), tr("How often ticket codes change. Shorter makes screenshots useless sooner."), <Stepper label={tr("QR code refresh")} value={s.qrRotationSeconds} min={10} max={120} step={5} unit={tr("sec")} onChange={(v) => set("qrRotationSeconds", v)} />)}
-              {row(tr("Sign-out after inactivity"), tr("Signed-in sessions end after this long without activity."), <Stepper label={tr("Session timeout")} value={s.sessionTimeoutMinutes} min={5} max={480} step={5} unit={tr("min")} onChange={(v) => set("sessionTimeoutMinutes", v)} />)}
+              {row(tr("Sign-out after inactivity"), tr("Staff and administrators are signed out after this long without activity. Students stay signed in on their own phone."), <Stepper label={tr("Session timeout")} value={s.sessionTimeoutMinutes} min={5} max={480} step={5} unit={tr("min")} onChange={(v) => set("sessionTimeoutMinutes", v)} />)}
               {row(tr("Booking rate limit"), tr("Maximum booking attempts per student per minute — stops scripts grabbing slots."), <Stepper label={tr("Booking rate limit")} value={s.bookingRateLimitPerMinute} min={1} max={60} unit={tr("/ min")} onChange={(v) => set("bookingRateLimitPerMinute", v)} />)}
               {row(
                 tr("University email domains"),
-                tr("Only these addresses can receive sign-in codes and register. Separate several with commas."),
+                tr("Only addresses at these domains can register. Separate several with commas."),
                 <div className="w-72">
                   <Input
                     aria-label={tr("University email domains")}
@@ -183,7 +184,7 @@ function SettingsForm({ settings, security }: { settings: SystemSettings; securi
             </>
           ) : (
             <>
-              {row(tr("University name"), tr("Shown in emails and on the sign-in page."), <div className="w-72"><Input aria-label={tr("University name")} value={s.universityName} onChange={(e) => set("universityName", e.target.value)} /></div>)}
+              {row(tr("University name"), tr("Shown on the sign-in page."), <div className="w-72"><Input aria-label={tr("University name")} value={s.universityName} onChange={(e) => set("universityName", e.target.value)} /></div>)}
               {row(tr("Product name"), tr("What students call the booking service."), <div className="w-72"><Input aria-label={tr("Product name")} value={s.productName} onChange={(e) => set("productName", e.target.value)} /></div>)}
               {row(tr("Support email"), tr("Where students are told to write with questions."), <div className="w-72"><Input aria-label={tr("Support email")} type="email" value={s.supportEmail} onChange={(e) => set("supportEmail", e.target.value)} /></div>)}
               {row(tr("Week starts on"), tr("Weekly booking limits reset on this day."), <div className="w-48"><Select aria-label={tr("Week starts on")} value={s.weekStartsOn} onChange={(e) => set("weekStartsOn", Number(e.target.value) as SystemSettings["weekStartsOn"])}><option value={6}>{tr("Saturday")}</option><option value={0}>{tr("Sunday")}</option><option value={1}>{tr("Monday")}</option></Select></div>)}
@@ -333,7 +334,7 @@ function MemberDialog({ member, open, onClose, onAdded }: { member: TeamMember |
     >
       <div className="space-y-4">
         {save.isError && <p className="rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger">{errorMessage(save.error)}</p>}
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label={tr("Full name")} htmlFor="tm-name">
             <Input id="tm-name" value={m.name} onChange={(e) => setM({ ...m, name: e.target.value })} />
           </Field>
@@ -361,9 +362,11 @@ function MemberDialog({ member, open, onClose, onAdded }: { member: TeamMember |
             <div className="flex flex-wrap gap-1.5">
               {(facilities.data ?? []).map((f) => {
                 const on = m.assignedFacilityIds.includes(f.facility.id);
+                // Archived facilities have no day to run — shown only so an old assignment can be removed.
+                if (f.facility.archived && !on) return null;
                 return (
                   <button key={f.facility.id} type="button" aria-pressed={on} onClick={() => setM({ ...m, assignedFacilityIds: on ? m.assignedFacilityIds.filter((x) => x !== f.facility.id) : [...m.assignedFacilityIds, f.facility.id] })} className={cn("h-8 rounded-full border px-3 text-xs font-semibold", on ? "border-brand bg-brand-soft text-brand-strong" : "border-line text-ink-2")}>
-                    {f.facility.name}
+                    {facilityName(f.facility)}
                   </button>
                 );
               })}

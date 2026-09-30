@@ -79,7 +79,7 @@ function FlagCard({ f, onDecide }: { f: FlagView; onDecide: (f: FlagView, d: Dec
         ))}
       </dl>
 
-      <div className="mt-4 grid gap-4 md:grid-cols-2">
+      <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
         <section>
           <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-faint">{t("Students (")}{f.users.length})</h4>
           <ul className="space-y-1">
@@ -184,7 +184,7 @@ export default function FairnessPage() {
       {q.isError ? (
         <ErrorState error={q.error} onRetry={() => q.refetch()} />
       ) : !q.data ? (
-        <div className="grid gap-4 xl:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           {Array.from({ length: 2 }, (_, i) => (
             <Skeleton key={i} className="h-80 rounded-[20px]" />
           ))}
@@ -192,7 +192,7 @@ export default function FairnessPage() {
       ) : list.length === 0 ? (
         <EmptyState icon={Scale} title={tab === "open" ? t("Nothing to review") : t("No resolved flags yet")} body={tab === "open" ? t("No booking patterns are waiting for a decision.") : undefined} className="rounded-[20px] border border-line bg-surface" />
       ) : (
-        <div className="grid gap-4 xl:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           {list.map((f) => (
             <FlagCard key={f.id} f={f} onDecide={(ff, d) => setPending({ f: ff, d })} />
           ))}

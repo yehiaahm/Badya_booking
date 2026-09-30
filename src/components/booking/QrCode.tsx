@@ -30,8 +30,11 @@ export const QrCode = memo(function QrCode({ value, size = 220, color = "#1c1915
   return (
     <svg viewBox={`0 0 ${vb} ${vb}`} width={size} height={size} className={className} role="img" aria-label={t("Booking QR code")}>
       <rect width={vb} height={vb} fill="#fff" rx={2} />
+      {/* Modules touch, with only slightly rounded corners: gaps between them (or rounder corners) turn
+          into light lines and holes on a camera frame, which the JavaScript decoder used on iPhones
+          then misreads at some distances. Tested from 2.5 to 16 pixels per module. */}
       {cells.map(([x, y]) => (
-        <rect key={`${x}.${y}`} x={x + pad + 0.08} y={y + pad + 0.08} width={0.84} height={0.84} rx={0.3} fill={color} />
+        <rect key={`${x}.${y}`} x={x + pad} y={y + pad} width={1} height={1} rx={0.2} fill={color} />
       ))}
       {finder(0, 0)}
       {finder(n - 7, 0)}

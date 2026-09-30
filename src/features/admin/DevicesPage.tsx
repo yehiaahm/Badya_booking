@@ -137,7 +137,7 @@ export default function DevicesPage() {
       {q.isError ? (
         <ErrorState error={q.error} onRetry={() => q.refetch()} />
       ) : !q.data ? (
-        <div className="grid gap-4 xl:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           {Array.from({ length: 2 }, (_, i) => (
             <Skeleton key={i} className="h-56 rounded-[20px]" />
           ))}
@@ -145,7 +145,7 @@ export default function DevicesPage() {
       ) : list.length === 0 ? (
         <EmptyState icon={Smartphone} title={tab === "waiting" ? t("No one is waiting") : t("No decisions in the last 30 days")} body={tab === "waiting" ? t("Device requests appear here the moment a student signs in on a new or shared device.") : undefined} className="rounded-[20px] border border-line bg-surface" />
       ) : (
-        <div className="grid gap-4 xl:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           {list.map((r) => (
             <RequestCard key={r.id} r={r} onDecide={(rr, d) => setPending({ r: rr, d })} />
           ))}

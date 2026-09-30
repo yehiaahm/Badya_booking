@@ -2,11 +2,13 @@ import type { SessionInfo } from "@/domain/engine/sessions";
 import type { Evaluation, RuleResult, SlotStatus } from "@/domain/engine/rules";
 import type { Standing } from "@/domain/engine/standing";
 import type { PolicyLine } from "@/domain/policy";
+import type { RosterProblem } from "@/lib/roster";
 import type {
   AppNotification,
   AuditLog,
   Booking,
   BookingPolicy,
+  CorrectableField,
   DeviceRequest,
   Facility,
   FacilityCategory,
@@ -15,8 +17,10 @@ import type {
   ID,
   MaintenancePeriod,
   OpeningHours,
+  ParticipantStatus,
   Restriction,
   RoleKey,
+  RosterEntry,
   User,
   WaitlistEntry,
 } from "@/domain/types";
@@ -111,9 +115,17 @@ export interface BookingView extends Booking {
   facility: Facility;
   category: FacilityCategory;
   booker: PublicUser;
+  /** Players who accepted (the booker is separate). */
   people: PublicUser[];
+  /** Everyone the booker invited, with where each invitation stands. */
+  team: { user: PublicUser; status: ParticipantStatus }[];
+  /** AWAITING_PLAYERS: acceptances still needed to confirm the booking. */
+  playersNeeded: number;
+  /** Fewest and most people on this booking, the booker included. */
+  peopleLimits: { min: number; max: number };
   unitName: string | null;
-  relation: "booker" | "participant" | "staff";
+  /** "invited": the viewer has an invitation they haven't answered. */
+  relation: "booker" | "participant" | "invited" | "staff";
   cancel: CancelInfo;
   checkInWindow: { opens: string; closes: string };
 }
@@ -157,6 +169,8 @@ export interface StandingInfo {
   strikesDetail: { bookingId: ID; facilityName: string; type: "no_show" | "late_cancel"; at: string; expiresAt: string }[];
   usage: UsageLine[];
   campus: { active: number; maxActive: number; waitlists: number; maxWaitlists: number };
+  /** The facilities office suspended the account: bookings can be seen and cancelled, nothing new. */
+  suspended?: { reason?: string; since: string };
 }
 
 export interface CreateBookingInput {
@@ -190,6 +204,8 @@ export interface ScanResult {
   booking?: BookingView;
   student?: PublicUser;
   alreadyCheckedIn?: boolean;
+  /** Found by booking reference, not a live code: staff compare the student card, then confirm with checkIn. */
+  verify?: boolean;
 }
 
 export interface StaffSessionBooking extends BookingView {
@@ -293,6 +309,13 @@ export interface StudentDetail extends StudentRow {
   frequentPartners: { user: PublicUser; shared: number }[];
   devices: { label: string; boundAt?: string; lastSeenAt: string }[];
   pendingDeviceRequests: number;
+  /** The student's entry on the official list — never the national-ID check itself. */
+  official?: { name?: string; nameAr?: string; email?: string; faculty?: string; year?: number; level?: "undergraduate" | "postgraduate"; status: "active" | "inactive"; idCheck: boolean };
+  /** Where each correctable detail comes from: the official list, a correction by the office, or what the student typed. */
+  provenance: Record<CorrectableField, "official" | "office" | "student">;
+  corrections: { field: CorrectableField; at: string; byName?: string }[];
+  /** Who suspended or closed the account. */
+  statusByName?: string;
 }
 
 export interface DeviceRequestView extends DeviceRequest {
@@ -301,6 +324,55 @@ export interface DeviceRequestView extends DeviceRequest {
   /** Devices currently linked to the requesting student. */
   linkedDevices: { label: string; boundAt?: string; lastSeenAt: string }[];
   decidedByName?: string;
+}
+
+/** The official student list and how it lines up with registered accounts. */
+export interface RosterSummary {
+  /** Students on the list; 0 means no list is loaded — and registration is closed until one is. */
+  count: number;
+  updatedAt?: string;
+  /** Graduated, withdrawn…: can't register or book. */
+  inactive: number;
+  /** Entries with national-ID digits — registration asks for them. */
+  withIdCheck: number;
+  /** Accounts whose university ID is on the list. */
+  registered: number;
+  /** Accounts that aren't on the list, or are inactive on it — they can't book or be invited. */
+  outsideCount: number;
+  outside: (PublicUser & { email: string; reason: "not_listed" | "inactive" })[];
+  /** Accounts on the list whose email differs from the list's — check they belong to that student. */
+  mismatchCount: number;
+  mismatched: (PublicUser & { email: string; listedEmail: string })[];
+}
+
+/** What loading a student-list file does (or would do). */
+export interface RosterImportReport {
+  /** Students read from the file. */
+  rows: number;
+  /** Not on the current list. */
+  added: number;
+  /** On the current list with different details. */
+  updated: number;
+  unchanged: number;
+  /** On the current list but not in the file — they lose access. */
+  removed: number;
+  /** Empty lines, ignored. */
+  blank: number;
+  /** Lines that can't be used (not counting duplicates). */
+  invalid: number;
+  /** Repeats of a university ID already in the file. */
+  duplicates: number;
+  inactive: number;
+  withIdCheck: number;
+  withEmail: number;
+  accounts: { matched: number; updated: number; keptCorrections: number; outside: number; inactive: number; mismatched: number };
+  /** The first rows as read — to check names and faculties came through (no national-ID data). */
+  sample: Omit<RosterEntry, "idCheck">[];
+  /** The first 100 problems; nothing is loaded while there are any. */
+  problems: RosterProblem[];
+  problemCount: number;
+  /** The list was replaced (false for a preview). */
+  applied: boolean;
 }
 
 export interface FlagView extends FairnessFlag {
@@ -354,4 +426,4 @@ export interface TeamMember extends User {
   facilityNames: string[];
 }
 
-export type { Evaluation, RuleResult, AppNotification, FacilityCategory, Facility, BookingPolicy, MaintenancePeriod, FacilityIssue, WaitlistEntry };
+export type { Evaluation, RuleResult, AppNotification, FacilityCategory, Facility, BookingPolicy, MaintenancePeriod, FacilityIssue, WaitlistEntry, RosterEntry };

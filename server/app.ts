@@ -90,7 +90,11 @@ export function createApp() {
 
   app.get("/api/health", (c) => c.json({ ok: true, time: new Date().toISOString() }));
 
-  app.post("/api/:ns/:method", bodyLimit({ maxSize: 512 * 1024, onError: (c) => c.json({ error: { code: "VALIDATION", message: "That request was too large." } }, 413) }), async (c) => {
+  const tooLarge = (c: Context) => c.json({ error: { code: "VALIDATION", message: "That request was too large." } }, 413);
+  const normalBody = bodyLimit({ maxSize: 512 * 1024, onError: tooLarge });
+  // The official student list can run to tens of thousands of rows.
+  const rosterBody = bodyLimit({ maxSize: 12 * 1024 * 1024, onError: tooLarge });
+  app.post("/api/:ns/:method", (c, next) => (c.req.param("ns") === "admin" && ["importRoster", "previewRoster"].includes(c.req.param("method")) ? rosterBody : normalBody)(c, next), async (c) => {
     c.header("Cache-Control", "no-store");
     c.header("X-Server-Time", new Date().toISOString());
     if (c.req.header(CSRF_HEADER) !== CSRF_VALUE) return c.json({ error: { code: "FORBIDDEN", message: "Request blocked." } }, 403);
@@ -154,9 +158,13 @@ export function createApp() {
     const index = readFileSync(path.join(dist, "index.html"), "utf8");
     app.use("/assets/*", async (c, next) => {
       await next();
-      c.header("Cache-Control", "public, max-age=31536000, immutable");
+      // Hashed files never change, so they're cached for good — but only when they exist: a cached
+      // miss would stay broken after the next deploy puts the file there.
+      c.header("Cache-Control", c.res.status === 200 ? "public, max-age=31536000, immutable" : "no-store");
     });
     app.use("*", serveStatic({ root: path.relative(process.cwd(), dist) || "." }));
+    // A missing file is a 404, never the app's page (which a browser would try to run as a script).
+    app.get("/assets/*", (c) => c.text("Not found", 404));
     app.get("*", (c) => {
       c.header("Cache-Control", "no-cache");
       return c.html(index);

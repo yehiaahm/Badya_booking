@@ -55,7 +55,7 @@ export function CalendarPage() {
     return m;
   }, [wl.data]);
 
-  const upcoming = (q.data ?? []).filter((b) => (b.status === "CONFIRMED" || b.status === "PENDING") && new Date(b.start) > now);
+  const upcoming = (q.data ?? []).filter((b) => b.relation !== "invited" && (b.status === "CONFIRMED" || b.status === "PENDING" || b.status === "AWAITING_PLAYERS") && new Date(b.start) > now);
   const inMonth = (q.data ?? []).filter((b) => !HIDDEN.has(b.status) && isSameMonth(new Date(b.start), month)).length;
   const selKey = dayKey(selected);
   const dayBookings = byDay.get(selKey) ?? [];
@@ -76,7 +76,7 @@ export function CalendarPage() {
         }
       />
 
-      <div className="grid gap-6 px-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid grid-cols-1 gap-6 px-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         <Card className="p-3 sm:p-5">
           <div className="mb-3 flex items-center justify-between gap-2">
             <h2 className="text-lg font-bold text-ink" aria-live="polite">

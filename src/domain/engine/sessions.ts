@@ -31,6 +31,22 @@ export interface SessionInfo {
   freeUnitIndex: number;
 }
 
+/** The moment a day opens for booking: `releaseHour` o'clock on that day. */
+export function releaseTime(day: Date, releaseHour = 0): Date {
+  const d = startOfDay(day);
+  d.setHours(releaseHour, 0, 0, 0);
+  return d;
+}
+
+/**
+ * The furthest day that can be booked now. A new day opens `advanceDays`
+ * ahead at `releaseHour` — before that hour, the window ends a day earlier.
+ */
+export function lastBookableDayAt(now: Date, advanceDays: number, releaseHour = 0): Date {
+  const released = now >= releaseTime(now, releaseHour);
+  return addDays(startOfDay(now), advanceDays - (released ? 0 : 1));
+}
+
 /** Session start/end times for a facility on a day. Turnover is built in. */
 export function sessionTimes(facility: Facility, day: Date): { start: Date; end: Date }[] {
   const hours = facility.schedule[day.getDay()];
@@ -45,6 +61,12 @@ export function sessionTimes(facility: Facility, day: Date): { start: Date; end:
     start = addMinutes(start, step);
   }
   return out;
+}
+
+/** Open for booking: the facility is active and not archived, and its facility type is shown and not archived. */
+export function takesBookings(ix: EngineIndex, facility: Facility): boolean {
+  const type = ix.category(facility.categoryId);
+  return facility.status === "active" && !facility.archived && type?.active !== false && !type?.archived;
 }
 
 export function capacityBookings(ix: EngineIndex, facilityId: ID, start: number, end: number, ignoreBookingId?: ID): Booking[] {
@@ -80,17 +102,17 @@ export function describeSession(
 
   const maintenance = ix.maintenanceFor(facility.id).find((m) => overlaps(start, end, new Date(m.start).getTime(), new Date(m.end).getTime()));
 
-  const lastBookableDay = addDays(startOfDay(now), policy.window.advanceDays);
   const sessionDay = startOfDay(startDate);
+  const lastBookableDay = lastBookableDayAt(now, policy.window.advanceDays, policy.window.releaseHour);
 
   let state: SessionState;
   let opensAt: string | undefined;
   if (start <= now.getTime()) state = "past";
-  else if (facility.status !== "active") state = "closed";
+  else if (!takesBookings(ix, facility)) state = "closed";
   else if (maintenance) state = "maintenance";
   else if (sessionDay > lastBookableDay) {
     state = "not_open";
-    opensAt = addDays(sessionDay, -policy.window.advanceDays).toISOString();
+    opensAt = releaseTime(addDays(sessionDay, -policy.window.advanceDays), policy.window.releaseHour).toISOString();
   } else if (start - now.getTime() < policy.window.minLeadMinutes * 60000) state = "closed";
   else if (remaining <= 0) state = "full";
   else if (capacity > 1 && remaining <= Math.max(1, Math.ceil(capacity * 0.2))) state = "limited";
@@ -136,7 +158,7 @@ export function summarizeDay(ix: EngineIndex, facility: Facility, day: Date): Da
   const future = sessions.filter((s) => s.state !== "past");
   const bookable = future.filter((s) => s.state === "available" || s.state === "limited").length;
   let state: DaySummary["state"];
-  if (sessions.length === 0 || facility.status !== "active") state = "closed";
+  if (sessions.length === 0 || !takesBookings(ix, facility)) state = "closed";
   else if (future.length === 0) state = "past";
   else if (future.every((s) => s.state === "not_open")) state = "not_open";
   else if (bookable === 0) state = "full";

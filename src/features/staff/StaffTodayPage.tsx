@@ -203,7 +203,7 @@ export function StaffTodayPage() {
         <FacilityPicker overview={q.data} value={f.id} onChange={select} />
       </div>
 
-      <div className="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="mt-5 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="space-y-3">
           <Card className="p-4 sm:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">

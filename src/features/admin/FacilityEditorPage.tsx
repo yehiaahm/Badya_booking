@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useBlocker, useNavigate, useParams } from "react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { AlertCircle, ArrowLeft, Copy, MapPin, Plus, ShieldCheck, Trash2, Wrench } from "lucide-react";
-import { api, ApiError } from "@/api";
+import { AlertCircle, Archive, ArchiveRestore, ArrowLeft, Copy, MapPin, Plus, ShieldCheck, Trash2, Wrench } from "lucide-react";
+import { api, ApiError, type BookingView } from "@/api";
 import type { AmenityKey, Audience, BookingMode, Facility, FacilityArabic, Motif } from "@/domain/types";
 import { cn } from "@/lib/cn";
 import { errorMessage, useAppConfig, usePolicies } from "@/lib/queries";
-import { fmtAgo } from "@/lib/time";
+import { fmtAgo, fmtDayShort, fmtRange } from "@/lib/time";
 import { AMENITIES, MOTIF_ICONS } from "@/components/icons";
 import { BRAND_ASSETS } from "@/components/brand/Brand";
 import { FacilityArt } from "@/components/facility/FacilityArt";
@@ -17,7 +17,10 @@ import { Badge, Card, ErrorState, Skeleton } from "@/components/ui/Primitives";
 import { Dialog } from "@/components/ui/Overlay";
 import { toast } from "@/components/ui/Toast";
 import { AdminHeader } from "@/layouts/AdminLayout";
-import { L, t } from "@/i18n";
+import { useCan } from "@/state/session";
+import { facilityName } from "@/domain/localize";
+import { ReasonDialog } from "./shared";
+import { L, N, t } from "@/i18n";
 
 const DAYS: { i: number; label: string }[] = [
   { i: 6, get label() {
@@ -135,16 +138,64 @@ export default function FacilityEditorPage() {
     return () => window.removeEventListener("beforeunload", h);
   }, [dirty]);
 
+  // Upcoming bookings the new setup has no session for — shown before anything is saved.
+  const [affected, setAffected] = useState<BookingView[] | null>(null);
   const save = useMutation({
-    mutationFn: (x: Facility) => api.admin.saveFacility({ ...x, id: x.id || `f_${slug(x.name)}`, ar: x.ar && { ...x.ar, rules: x.ar.rules?.map((r) => r.trim()).filter(Boolean) } }, isNew),
-    onSuccess: (saved) => {
+    mutationFn: ({ x, cancel }: { x: Facility; cancel?: boolean }) => api.admin.saveFacility({ ...x, id: x.id || `f_${slug(x.name) || Date.now().toString(36)}`, ar: x.ar && { ...x.ar, rules: x.ar.rules?.map((r) => r.trim()).filter(Boolean) } }, isNew, cancel),
+    onSuccess: (saved, { cancel }) => {
+      const cancelled = cancel ? (affected?.length ?? 0) : 0;
+      setAffected(null);
       setF(saved);
       setBaseline(JSON.stringify(saved));
-      toast.success(isNew ? t("{name} created", { name: saved.name }) : t("Changes saved"), isNew ? t("It’s live for students now.") : undefined);
+      toast.success(isNew ? t("{name} created", { name: saved.name }) : t("Changes saved"), isNew ? t("It’s live for students now.") : cancelled ? t("{bookings} cancelled and the students told.", { bookings: N.booking(cancelled) }) : undefined);
       if (isNew) setTimeout(() => nav(`/admin/facilities/${saved.id}`, { replace: true }), 0);
     },
+    onError: (e) => {
+      const list = e instanceof ApiError && e.code === "CONFLICT" ? (e.data as { affected?: BookingView[] } | undefined)?.affected : undefined;
+      if (list?.length) setAffected(list);
+    },
   });
-  const errors = save.error instanceof ApiError ? ((save.error.data as { errors?: string[] } | undefined)?.errors ?? [save.error.message]) : save.error ? [errorMessage(save.error)] : [];
+  const errors = affected ? [] : save.error instanceof ApiError ? ((save.error.data as { errors?: string[] } | undefined)?.errors ?? [save.error.message]) : save.error ? [errorMessage(save.error)] : [];
+
+  /* Retiring: archive (keeps everything) or, for a facility nothing refers to, delete. */
+  const canManage = useCan("facility.manage");
+  const [retiring, setRetiring] = useState<"archive" | "delete" | null>(null);
+  const [archiveReason, setArchiveReason] = useState("");
+  const [archiveAffected, setArchiveAffected] = useState<BookingView[] | null>(null);
+  const archive = useMutation({
+    mutationFn: ({ reason, cancel }: { reason: string; cancel?: boolean }) => api.admin.archiveFacility(id!, reason || undefined, cancel),
+    onSuccess: (res) => {
+      setRetiring(null);
+      setArchiveAffected(null);
+      setF(res.facility);
+      setBaseline(JSON.stringify(res.facility));
+      toast.success(t("{name} archived", { name: facilityName(res.facility) }), res.cancelled ? t("{bookings} cancelled and the students told.", { bookings: N.booking(res.cancelled) }) : t("No upcoming bookings were affected."));
+    },
+    onError: (e) => {
+      const list = e instanceof ApiError && e.code === "CONFLICT" ? (e.data as { affected?: BookingView[] } | undefined)?.affected : undefined;
+      if (list?.length) {
+        setRetiring(null);
+        setArchiveAffected(list);
+      }
+    },
+  });
+  const restore = useMutation({
+    mutationFn: () => api.admin.restoreFacility(id!),
+    onSuccess: (next) => {
+      setF(next);
+      setBaseline(JSON.stringify(next));
+      toast.success(t("{name} restored", { name: facilityName(next) }), next.status === "active" ? t("It’s open for booking again.") : t("It’s back as it was — still closed. Reopen it when it’s ready."));
+    },
+    onError: (e) => toast.error(t("Couldn’t restore"), errorMessage(e)),
+  });
+  const remove = useMutation({
+    mutationFn: () => api.admin.deleteFacility(id!),
+    onSuccess: () => {
+      toast.success(t("{name} deleted", { name: f ? facilityName(f) : "" }));
+      setRetiring(null);
+      nav("/admin/facilities", { replace: true });
+    },
+  });
 
   const category = useMemo(() => policies.data?.categories.find((c) => c.id === f?.categoryId), [policies.data, f?.categoryId]);
 
@@ -176,7 +227,7 @@ export default function FacilityEditorPage() {
             {isNew ? t("New facility") : f.name || t("Untitled facility")}
           </span>
         }
-        badge={!isNew && (f.status === "active" ? <Badge tone="success" dot>{t("Open")}</Badge> : <Badge tone="danger" dot>{t("Closed")}</Badge>)}
+        badge={!isNew && (f.archived ? <Badge icon={<Archive className="size-3" />}>{t("Archived")}</Badge> : f.status === "active" ? <Badge tone="success" dot>{t("Open")}</Badge> : <Badge tone="danger" dot>{t("Closed")}</Badge>)}
         description={isNew ? t("Students can book it as soon as you save.") : t("Last updated {ago}.", { ago: fmtAgo(f.updatedAt) })}
         actions={
           <>
@@ -184,7 +235,7 @@ export default function FacilityEditorPage() {
             <Button variant="ghost" disabled={!dirty || save.isPending} onClick={() => setF(JSON.parse(baseline))}>
               {t("Discard")}
             </Button>
-            <Button loading={save.isPending} disabled={!dirty} onClick={() => save.mutate(f)}>
+            <Button loading={save.isPending} disabled={!dirty} onClick={() => save.mutate({ x: f })}>
               {isNew ? t("Create facility") : t("Save changes")}
             </Button>
           </>
@@ -202,10 +253,10 @@ export default function FacilityEditorPage() {
         </div>
       )}
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="space-y-6">
           <Section title={t("Basics")}>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label={t("Name")} htmlFor="fe-name">
                 <Input id="fe-name" value={f.name} onChange={(e) => set("name", e.target.value)} placeholder={t("e.g. Padel Courts")} />
               </Field>
@@ -216,7 +267,7 @@ export default function FacilityEditorPage() {
                 <Select id="fe-cat" value={f.categoryId} onChange={(e) => set("categoryId", e.target.value)}>
                   {policies.data.categories.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.name}
+                      {facilityName(c)}
                       {c.active ? "" : ` (${t("hidden")})`}
                     </option>
                   ))}
@@ -232,7 +283,7 @@ export default function FacilityEditorPage() {
           </Section>
 
           <Section title={t("Location")} description={t("Where students go — and where the pin sits on the campus map.")}>
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <Field label={t("Building")} htmlFor="fe-building">
                 <Input id="fe-building" value={f.location.building} onChange={(e) => setLoc({ building: e.target.value })} placeholder={t("Sports Courts")} />
               </Field>
@@ -263,7 +314,7 @@ export default function FacilityEditorPage() {
           </Section>
 
           <Section title={t("Booking setup")} description={t("How the space is shared and how long each session lasts.")}>
-            <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t("Booking mode")}>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t("Booking mode")}>
               {(
                 [
                   { v: "exclusive", t: t("Whole space per booking"), d: t("A group books a court, pitch or room for themselves. Several identical spaces can share one listing.") },
@@ -276,7 +327,7 @@ export default function FacilityEditorPage() {
                 </button>
               ))}
             </div>
-            <div className="mt-5 grid gap-5 sm:grid-cols-2">
+            <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-[13px] font-semibold text-ink">{f.mode === "shared" ? t("Spots per session") : t("Identical spaces")}</p>
@@ -387,7 +438,7 @@ export default function FacilityEditorPage() {
           </Section>
 
           <Section title={t("Arabic content")} description={t("Shown to students who use the app in Arabic. Anything left empty falls back to the English text.")}>
-            <div dir="rtl" lang="ar" className="grid gap-4 sm:grid-cols-2">
+            <div dir="rtl" lang="ar" className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label={t("One-line summary")} htmlFor="fe-ar-short" optional>
                 <Input id="fe-ar-short" value={f.ar?.shortDescription ?? ""} maxLength={120} onChange={(e) => setAr({ shortDescription: e.target.value || undefined })} />
               </Field>
@@ -399,7 +450,7 @@ export default function FacilityEditorPage() {
               <Field label={t("Description")} htmlFor="fe-ar-desc" className="mt-4" optional>
                 <Textarea id="fe-ar-desc" value={f.ar?.description ?? ""} onChange={(e) => setAr({ description: e.target.value || undefined })} />
               </Field>
-              <div className="mt-4 grid gap-4 sm:grid-cols-3">
+              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <Field label={t("Building")} htmlFor="fe-ar-building" optional>
                   <Input id="fe-ar-building" value={f.ar?.building ?? ""} onChange={(e) => setAr({ building: e.target.value || undefined })} />
                 </Field>
@@ -515,11 +566,45 @@ export default function FacilityEditorPage() {
                   <li key={i.id} className="text-sm">
                     <span className="block text-ink-2">{i.description}</span>
                     <span className="text-xs text-muted">
-                      {i.severity} · {i.status.replace("_", " ")} · {fmtAgo(i.createdAt)}
+                      {i.severity === "high" ? t("High") : i.severity === "medium" ? t("Medium") : t("Low")} · {i.status === "open" ? t("Open") : i.status === "in_progress" ? t("In progress") : t("Resolved")} · {fmtAgo(i.createdAt)}
                     </span>
                   </li>
                 ))}
               </ul>
+            </Card>
+          )}
+          {!isNew && canManage && existing.data && (
+            <Card className="space-y-3 p-4">
+              <p className="flex items-center gap-2 text-sm font-bold text-ink">
+                <Archive className="size-4 text-muted" />
+                {f.archived ? t("Archived") : t("Retire this facility")}
+              </p>
+              {f.archived ? (
+                <>
+                  <p className="text-xs leading-relaxed text-muted">{t("Archived {when}. It can’t be booked and is hidden from students and staff; its bookings and history are kept.", { when: fmtAgo(f.archived.at) })}</p>
+                  <Button size="sm" variant="soft" icon={<ArchiveRestore className="size-4" />} loading={restore.isPending} onClick={() => restore.mutate()}>
+                    {t("Restore")}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs leading-relaxed text-muted">
+                    {existing.data.hasHistory
+                      ? t("Archiving hides it from students and staff and stops all booking. Its bookings, waitlists and audit trail are kept, and you can restore it later.")
+                      : t("It has no bookings or other history yet, so it can be deleted for good — or archived to keep it for later.")}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="danger-soft" icon={<Archive className="size-4" />} onClick={() => setRetiring("archive")}>
+                      {t("Archive facility")}
+                    </Button>
+                    {!existing.data.hasHistory && (
+                      <Button size="sm" variant="ghost" icon={<Trash2 className="size-4" />} onClick={() => setRetiring("delete")}>
+                        {t("Delete facility")}
+                      </Button>
+                    )}
+                  </div>
+                </>
+              )}
             </Card>
           )}
         </aside>
@@ -543,6 +628,118 @@ export default function FacilityEditorPage() {
         }
       >
         <p className="text-sm text-ink-2">{t("Leaving now loses everything you’ve changed since the last save.")}</p>
+      </Dialog>
+
+      <ReasonDialog
+        open={retiring === "archive"}
+        onClose={() => setRetiring(null)}
+        title={t("Archive {name}?", { name: facilityName(f) })}
+        description={t("Students and staff stop seeing it and it can’t be booked. Its bookings, waitlists and audit trail are kept. You can restore it later.")}
+        presets={[t("Permanently closed"), t("Replaced by another facility"), t("Created by mistake")]}
+        confirmLabel={t("Archive facility")}
+        variant="danger"
+        optional
+        loading={archive.isPending}
+        error={archive.isError && !archiveAffected ? errorMessage(archive.error) : undefined}
+        onConfirm={(reason) => {
+          setArchiveReason(reason);
+          archive.mutate({ reason });
+        }}
+      />
+      <Dialog
+        open={!!archiveAffected}
+        onClose={() => setArchiveAffected(null)}
+        title={t("These bookings would be cancelled")}
+        description={t("Archiving cancels them without a strike, and everyone on them is told why. Waitlists for this facility are cleared too.")}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setArchiveAffected(null)}>
+              {t("Keep the facility")}
+            </Button>
+            <Button variant="danger" loading={archive.isPending} onClick={() => archive.mutate({ reason: archiveReason, cancel: true })}>
+              {t("Cancel {bookings} and archive", { bookings: N.booking(archiveAffected?.length ?? 0) })}
+            </Button>
+          </>
+        }
+      >
+        <ul className="max-h-72 space-y-2 overflow-y-auto">
+          {archiveAffected?.map((b) => (
+            <li key={b.id} className="flex items-center justify-between gap-3 rounded-xl border border-line px-3 py-2 text-sm">
+              <span className="min-w-0">
+                <span className="block font-semibold text-ink tabular">
+                  {fmtDayShort(b.start)}
+                  {L(", ", "، ")}
+                  {fmtRange(b.start, b.end)}
+                </span>
+                <span className="block truncate text-muted">
+                  {b.booker.name}
+                  {b.people.length > 1 ? ` +${b.people.length - 1}` : ""}
+                </span>
+              </span>
+              <span className="shrink-0 text-xs font-semibold text-muted">{b.id}</span>
+            </li>
+          ))}
+        </ul>
+      </Dialog>
+      <Dialog
+        open={retiring === "delete"}
+        onClose={() => setRetiring(null)}
+        size="sm"
+        title={t("Delete {name} for good?", { name: facilityName(f) })}
+        description={t("It has never had a booking, waitlist, issue or maintenance entry, so nothing else is affected. This can’t be undone.")}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setRetiring(null)}>
+              {t("Cancel")}
+            </Button>
+            <Button variant="danger" loading={remove.isPending} onClick={() => remove.mutate()}>
+              {t("Delete facility")}
+            </Button>
+          </>
+        }
+      >
+        {remove.isError && (
+          <p role="alert" className="text-sm font-medium text-danger">
+            {errorMessage(remove.error)}
+          </p>
+        )}
+      </Dialog>
+
+      <Dialog
+        open={!!affected}
+        onClose={() => setAffected(null)}
+        title={t("These bookings don’t fit the new setup")}
+        description={t("Saving cancels them without a strike, and everyone on them is told why. Waitlists for sessions that no longer exist are cleared too.")}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setAffected(null)}>
+              {t("Keep editing")}
+            </Button>
+            <Button variant="danger" loading={save.isPending} onClick={() => save.mutate({ x: f, cancel: true })}>
+              {t("Cancel {bookings} and save", { bookings: N.booking(affected?.length ?? 0) })}
+            </Button>
+          </>
+        }
+      >
+        <ul className="max-h-72 space-y-2 overflow-y-auto">
+          {affected?.map((b) => (
+            <li key={b.id} className="flex items-center justify-between gap-3 rounded-xl border border-line px-3 py-2 text-sm">
+              <span className="min-w-0">
+                <span className="block font-semibold text-ink tabular">
+                  {fmtDayShort(b.start)}
+                  {L(", ", "، ")}
+                  {fmtRange(b.start, b.end)}
+                  {b.unitName ? ` · ${b.unitName}` : ""}
+                </span>
+                <span className="block truncate text-muted">
+                  {b.booker.name}
+                  {b.people.length > 1 ? ` +${b.people.length - 1}` : ""}
+                </span>
+              </span>
+              <span className="shrink-0 text-xs font-semibold text-muted">{b.id}</span>
+            </li>
+          ))}
+        </ul>
       </Dialog>
     </div>
   );

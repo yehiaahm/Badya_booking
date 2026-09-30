@@ -9,12 +9,13 @@ import { useNow } from "@/lib/hooks";
 import { useMyBookings, useMyWaitlist } from "@/lib/queries";
 import { countdown, dayKey, fmtDayShort, fmtRange, relDay } from "@/lib/time";
 import { TicketCard, TicketSkeleton, useQrSheet } from "@/components/booking/Ticket";
+import { Invitations } from "@/components/booking/Invitations";
 import { Button } from "@/components/ui/Button";
 import { EmptyState, ErrorState, Tabs } from "@/components/ui/Primitives";
 import { toast } from "@/components/ui/Toast";
 import { FacilityArt } from "@/components/facility/FacilityArt";
 import { PageHeader } from "@/layouts/StudentLayout";
-import { t as tr } from "@/i18n";
+import { L, t as tr } from "@/i18n";
 
 const TABS = ["upcoming", "active", "waitlist", "completed", "cancelled", "noshow"] as const;
 type Tab = (typeof TABS)[number];
@@ -63,7 +64,7 @@ function WaitlistCard({ w }: { w: WaitlistView }) {
             )}
           </div>
           <p className="mt-0.5 text-[13px] font-semibold text-ink-2 tabular">
-            {relDay(w.entry.start, now)}, {fmtRange(w.entry.start, w.entry.end)}
+            {relDay(w.entry.start, now)}{L(", ", "، ")}{fmtRange(w.entry.start, w.entry.end)}
           </p>
           {!ended && !offered && (
             <div className="mt-2.5 flex items-center gap-1" aria-label={tr("Position {position} of {queueLength}", { position: w.position, queueLength: w.queueLength })}>
@@ -116,7 +117,8 @@ export function MyBookingsPage() {
     const s = (b: BookingView) => new Date(b.start).getTime();
     const e = (b: BookingView) => new Date(b.end).getTime();
     return {
-      upcoming: all.filter((b) => (b.status === "CONFIRMED" || b.status === "PENDING") && s(b) > t).sort((a, b) => s(a) - s(b)),
+      invites: all.filter((b) => b.relation === "invited" && s(b) > t).sort((a, b) => s(a) - s(b)),
+      upcoming: all.filter((b) => b.relation !== "invited" && (b.status === "CONFIRMED" || b.status === "PENDING" || b.status === "AWAITING_PLAYERS") && s(b) > t).sort((a, b) => s(a) - s(b)),
       active: all.filter((b) => b.status === "CHECKED_IN" || (b.status === "CONFIRMED" && s(b) <= t && e(b) > t)),
       completed: all.filter((b) => b.status === "COMPLETED").sort((a, b) => s(b) - s(a)),
       cancelled: all.filter((b) => b.status === "CANCELLED" || b.status === "EXPIRED").sort((a, b) => s(b) - s(a)),
@@ -126,7 +128,7 @@ export function MyBookingsPage() {
   const waitActive = (wl.data ?? []).filter((w) => w.entry.status === "waiting" || w.entry.status === "offered");
 
   const items = [
-    { value: "upcoming" as Tab, label: tr("Upcoming"), count: sets.upcoming.length, icon: <CalendarCheck className="size-4" /> },
+    { value: "upcoming" as Tab, label: tr("Upcoming"), count: sets.upcoming.length + sets.invites.length, icon: <CalendarCheck className="size-4" /> },
     { value: "active" as Tab, label: tr("Active"), count: sets.active.length || undefined },
     { value: "waitlist" as Tab, label: tr("Waitlist"), count: waitActive.length || undefined },
     { value: "completed" as Tab, label: tr("Completed") },
@@ -144,6 +146,7 @@ export function MyBookingsPage() {
   };
 
   const list: BookingView[] = tab === "waitlist" ? [] : sets[tab];
+  const invites = tab === "upcoming" ? sets.invites : [];
   const E = empty[tab];
 
   return (
@@ -156,7 +159,7 @@ export function MyBookingsPage() {
         {q.isError ? (
           <ErrorState error={q.error} onRetry={() => q.refetch()} />
         ) : !q.data ? (
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             {Array.from({ length: 4 }, (_, i) => (
               <TicketSkeleton key={i} />
             ))}
@@ -165,7 +168,7 @@ export function MyBookingsPage() {
           (wl.data ?? []).length === 0 ? (
             <EmptyState icon={E.icon} title={E.title} body={E.body} action={<Button variant="secondary" icon={<Compass className="size-4" />} onClick={() => nav("/explore")}>{tr("Explore facilities")}</Button>} />
           ) : (
-            <div className="grid gap-3 lg:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
               <AnimatePresence>
                 {(wl.data ?? []).map((w) => (
                   <WaitlistCard key={w.entry.id} w={w} />
@@ -173,17 +176,23 @@ export function MyBookingsPage() {
               </AnimatePresence>
             </div>
           )
-        ) : list.length === 0 ? (
+        ) : list.length === 0 && invites.length === 0 ? (
           <EmptyState icon={E.icon} title={E.title} body={E.body} action={tab === "upcoming" || tab === "active" ? <Button icon={<Compass className="size-4" />} onClick={() => nav("/explore")}>{tr("Explore facilities")}</Button> : undefined} />
         ) : tab === "upcoming" ? (
           <div className="space-y-6">
+            {invites.length > 0 && (
+              <section>
+                <h2 className="mb-2.5 text-xs font-bold uppercase tracking-wider text-brand">{tr("Invitations")}</h2>
+                <Invitations bookings={invites} className="" />
+              </section>
+            )}
             {groupByDay(list).map((g) => (
               <section key={g.day}>
                 <h2 className="mb-2.5 text-xs font-bold uppercase tracking-wider text-faint">
                   {relDay(g.items[0].start, now)}
                   {relDay(g.items[0].start, now) !== fmtDayShort(g.items[0].start) && <span className="ms-1.5 font-semibold normal-case tracking-normal">· {fmtDayShort(g.items[0].start)}</span>}
                 </h2>
-                <div className="grid gap-3 lg:grid-cols-2">
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
                   <AnimatePresence>
                     {g.items.map((b) => (
                       <TicketCard key={b.id} b={b} onQr={() => qr.open(b)} />
@@ -200,7 +209,7 @@ export function MyBookingsPage() {
                 {tr("Missed sessions count as strikes until they expire.")}{" "}<Link to="/profile" className="font-semibold text-brand hover:underline">{tr("See your standing")}</Link>{tr(". If you missed a session for a good reason, contact the facilities office — staff can waive a strike.")}
               </p>
             )}
-            <div className="grid gap-3 lg:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
               <AnimatePresence>
                 {list.map((b) => (
                   <TicketCard key={b.id} b={b} onQr={() => qr.open(b)} highlight={tab === "active"} />

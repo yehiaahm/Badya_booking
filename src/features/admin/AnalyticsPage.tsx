@@ -68,7 +68,7 @@ export default function AnalyticsPage() {
           </div>
 
           {d && d.insights.length > 0 && (
-            <section className="grid gap-3 md:grid-cols-2" aria-label={tr("Insights")}>
+            <section className="grid grid-cols-1 gap-3 md:grid-cols-2" aria-label={tr("Insights")}>
               {d.insights.map((i) => (
                 <p key={i.text} className={cn("flex gap-3 rounded-2xl border p-4 text-sm leading-relaxed text-ink-2", i.tone === "warning" ? "border-warning/25 bg-warning-soft" : i.tone === "success" ? "border-success/25 bg-success-soft" : "border-line bg-surface")}>
                   {i.tone === "warning" ? <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" /> : i.tone === "success" ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" /> : <Info className="mt-0.5 size-4 shrink-0 text-info" />}
@@ -95,7 +95,7 @@ export default function AnalyticsPage() {
             </ChartCard>
           )}
 
-          <div className="grid gap-6 xl:grid-cols-2">
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
             {!d ? (
               <Skeleton className="h-96 rounded-[20px]" />
             ) : (
@@ -120,7 +120,7 @@ export default function AnalyticsPage() {
             </ChartCard>
           )}
 
-          <div className="grid gap-6 xl:grid-cols-2">
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
             {!d ? (
               <Skeleton className="h-64 rounded-[20px]" />
             ) : (

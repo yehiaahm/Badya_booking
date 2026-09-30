@@ -16,7 +16,8 @@ import { Drawer } from "@/components/ui/Overlay";
 import { toast } from "@/components/ui/Toast";
 import { AdminHeader } from "@/layouts/AdminLayout";
 import { Pagination, ReasonDialog, TableShell, downloadCsv, td, th, useUrlFilters } from "./shared";
-import { N, t as tr, tStored } from "@/i18n";
+import { L, N, t as tr, tStored } from "@/i18n";
+import { facilityName } from "@/domain/localize";
 
 type Range = "upcoming" | "today" | "past7" | "all";
 const RANGES: { value: Range; label: string }[] = [
@@ -33,7 +34,7 @@ const RANGES: { value: Range; label: string }[] = [
     return tr("All time");
   } },
 ];
-const STATUSES: BookingStatus[] = ["PENDING", "CONFIRMED", "CHECKED_IN", "COMPLETED", "NO_SHOW", "CANCELLED", "EXPIRED"];
+const STATUSES: BookingStatus[] = ["AWAITING_PLAYERS", "PENDING", "CONFIRMED", "CHECKED_IN", "COMPLETED", "NO_SHOW", "CANCELLED", "EXPIRED"];
 const CANCEL_REASONS = () => [tr("Facility needed for a university event"), tr("Duplicate booking"), tr("Requested by the student"), tr("Safety or maintenance issue")];
 const DECLINE_REASONS = () => [tr("Facility reserved for an official event"), tr("Not enough information in the request"), tr("Outside what this space is for")];
 const WAIVE_REASONS = () => [tr("Medical reason"), tr("Official university event"), tr("Facility issue on arrival"), tr("Checked in but not recorded")];
@@ -46,13 +47,13 @@ function hasStrike(b: BookingView) {
 
 function DetailDrawer({ b, onClose, onAction, onApprove, approving }: { b: BookingView | null; onClose: () => void; onAction: (a: Action) => void; onApprove: (b: BookingView) => void; approving: boolean }) {
   const now = useNow(60000);
-  const upcoming = b && (b.status === "PENDING" || b.status === "CONFIRMED") && new Date(b.start) > now;
+  const upcoming = b && (b.status === "PENDING" || b.status === "CONFIRMED" || b.status === "AWAITING_PLAYERS") && new Date(b.start) > now;
   return (
     <Drawer
       open={!!b}
       onClose={onClose}
       title={b?.facility.name}
-      description={b ? `${b.id} · ${fmtDayShort(b.start)}, ${fmtRange(b.start, b.end)}` : undefined}
+      description={b ? `${b.id} · ${fmtDayShort(b.start)}${L(", ", "، ")}${fmtRange(b.start, b.end)}` : undefined}
       footer={
         b && (
           <>
@@ -84,7 +85,7 @@ function DetailDrawer({ b, onClose, onAction, onApprove, approving }: { b: Booki
         <div className="space-y-6">
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={b.status} />
-            <span className="text-sm text-muted">{BOOKING_STATUS[b.status].description}</span>
+            <span className="text-sm text-muted">{BOOKING_STATUS[b.status].staffDescription}</span>
           </div>
           <dl className="grid grid-cols-2 gap-4 text-sm">
             <div>
@@ -242,7 +243,8 @@ export default function BookingsPage() {
               <option value="">{tr("All facilities")}</option>
               {(facilities.data ?? []).map((f) => (
                 <option key={f.facility.id} value={f.facility.id}>
-                  {f.facility.name}
+                  {facilityName(f.facility)}
+                  {f.facility.archived ? ` (${tr("archived")})` : ""}
                 </option>
               ))}
             </Select>
@@ -351,22 +353,23 @@ export default function BookingsPage() {
         open={action?.kind === "cancel"}
         onClose={() => setAction(null)}
         title={tr("Cancel this booking?")}
-        description={action ? `${action.b.facility.name} · ${fmtDayShort(action.b.start)}, ${fmtRange(action.b.start, action.b.end)} · ${action.b.booker.name}` : undefined}
+        description={action ? `${action.b.facility.name} · ${fmtDayShort(action.b.start)}${L(", ", "، ")}${fmtRange(action.b.start, action.b.end)} · ${action.b.booker.name}` : undefined}
         presets={CANCEL_REASONS()}
         confirmLabel={tr("Cancel booking")}
+        dismissLabel={tr("Keep booking")}
         variant="danger"
         loading={act.isPending}
         error={act.isError ? errorMessage(act.error) : undefined}
         onConfirm={(reason) => action && act.mutate({ a: action, reason })}
       >
-        <p className="text-sm text-ink-2">{tr("No strike is recorded.")}{" "}{action?.b.status === "CONFIRMED" ? tr("The spot is offered to the next student on the waitlist.") : ""}</p>
-        <Checkbox checked={notifyStudents} onChange={setNotifyStudents} label={tr("Notify {v}", { v: action && action.b.people.length ? `all ${action.b.people.length + 1} people` : "the student" })} />
+        <p className="text-sm text-ink-2">{tr("No strike is recorded.")}{" "}{tr("The spot is offered to the next student on the waitlist.")}</p>
+        <Checkbox checked={notifyStudents} onChange={setNotifyStudents} label={action && action.b.people.length > 0 ? tr("Notify all {n} people", { n: action.b.people.length + 1 }) : tr("Notify the student")} />
       </ReasonDialog>
       <ReasonDialog
         open={action?.kind === "decline"}
         onClose={() => setAction(null)}
         title={tr("Decline this request?")}
-        description={action ? `${action.b.facility.name} · ${fmtDayShort(action.b.start)}, ${fmtRange(action.b.start, action.b.end)} · ${action.b.booker.name}` : undefined}
+        description={action ? `${action.b.facility.name} · ${fmtDayShort(action.b.start)}${L(", ", "، ")}${fmtRange(action.b.start, action.b.end)} · ${action.b.booker.name}` : undefined}
         presets={DECLINE_REASONS()}
         confirmLabel={tr("Decline request")}
         variant="danger"
@@ -379,7 +382,7 @@ export default function BookingsPage() {
         open={action?.kind === "waive"}
         onClose={() => setAction(null)}
         title={tr("Waive this strike?")}
-        description={action ? `${action.b.booker.name} · ${action.b.facility.name}, ${fmtDayShort(action.b.start)}` : undefined}
+        description={action ? `${action.b.booker.name} · ${action.b.facility.name}${L(", ", "، ")}${fmtDayShort(action.b.start)}` : undefined}
         presets={WAIVE_REASONS()}
         confirmLabel={tr("Waive strike")}
         loading={act.isPending}
